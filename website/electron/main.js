@@ -1,4 +1,4 @@
-const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen } = require("electron");
+const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen, crashReporter } = require("electron");
 const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
@@ -134,6 +134,24 @@ const { migrateRemoteHostConfig, getRemoteHostConfig, setRemoteHostConfig } = re
 const { seedRenamedStore } = require("./store-rename");
 
 const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = require("./local-gateway");
+
+const { initNativeLogging } = require("./native-logging");
+
+// Arm native diagnostic capture FIRST, before anything can crash and before the
+// app is ready: Chromium reads its logging switches during initialization, so a
+// later call is accepted and then ignored. This is what makes the next renderer
+// abort explain itself — a GUI launch discards raw stderr, which is where V8
+// prints the one line naming the fatal reason (see native-logging.js).
+// `gatewayLogPath` is a hoisted function declaration and only needs the modules
+// required above, so calling it here is safe and reuses its logs-dir resolution
+// (including the tmpdir fallback) rather than duplicating it.
+initNativeLogging({
+  logsDir: path.dirname(gatewayLogPath()),
+  appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
+  startCrashReporter: (opts) => crashReporter.start(opts),
+  fs,
+  log: (m) => glog(m),
+});
 
 // Carry settings across the npm `name` rename, by writing the new store's file
 // BEFORE electron-store opens it. Order is load-bearing: construction writes the
