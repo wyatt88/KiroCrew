@@ -4923,7 +4923,10 @@
     "agoSeconds": "vor {{n}} s",
     "agoMinutes": "vor {{n}} Min.",
     "agoHours": "vor {{n}} Std.",
-    "agoDays": "vor {{n}} T."
+    "agoDays": "vor {{n}} T.",
+    "updatedNow": "gerade aktualisiert",
+    "pollNote": "Aktualisiert sich alle paar Sekunden; Credits erscheinen, wenn ein Turn endet.",
+    "refresh": "Aktualisieren"
   },
   "components": {
     "crewWakeSection": {
