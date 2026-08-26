@@ -8,21 +8,15 @@
 // free). Credits are provider-reported, not derived from tokens, so everything
 // here is a straight sum of the `credits` field.
 import { useEffect, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Coins, Cpu, Layers, RefreshCw, Users } from 'lucide-react'
 
 import { Badge, Card, CardTitle, StatCard } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 
 import { creditUsageApi } from './api'
-import {
-  DEFAULT_WINDOW_DAYS,
-  POLL_MS,
-  RECENT_LIMIT,
-  STORAGE_KEY,
-  WINDOW_CHOICES,
-} from './constants'
-import type { BreakdownRow, RecentRow, SummaryResponse, TopSession } from './types'
+import { DEFAULT_WINDOW_DAYS, POLL_MS, STORAGE_KEY, WINDOW_CHOICES } from './constants'
+import type { BreakdownRow, SummaryResponse, TopSession } from './types'
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -43,20 +37,6 @@ function fmtInt(n: number | null | undefined): string {
 function pct(part: number, whole: number): number {
   if (!whole) return 0
   return Math.round((part / whole) * 100)
-}
-
-function relTime(iso: string): string {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (isNaN(t)) return ''
-  const secs = Math.max(0, Math.round((Date.now() - t) / 1000))
-  if (secs < 60) return i18nT('creditUsage.agoSeconds', { n: secs })
-  const mins = Math.round(secs / 60)
-  if (mins < 60) return i18nT('creditUsage.agoMinutes', { n: mins })
-  const hrs = Math.round(mins / 60)
-  if (hrs < 48) return i18nT('creditUsage.agoHours', { n: hrs })
-  const days = Math.round(hrs / 24)
-  return i18nT('creditUsage.agoDays', { n: days })
 }
 
 function surfaceVariant(surface: string): 'ok' | 'err' | 'warn' | 'aim' | 'muted' {
@@ -227,52 +207,6 @@ function TopSessionsTable({ rows }: { rows: TopSession[] }) {
   )
 }
 
-function RecentFeed({ rows }: { rows: RecentRow[] }) {
-  if (!rows.length) {
-    return <div style={{ color: 'var(--text-muted, #888)', fontSize: 13 }}>{i18nT('creditUsage.noData')}</div>
-  }
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      {rows.map((r, i) => {
-        const ctxPct = r.contextWindow ? pct(r.contextUsed, r.contextWindow) : 0
-        return (
-          <div
-            key={`${r.ts}-${i}`}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '6px 8px',
-              borderRadius: 6,
-              background: 'var(--surface-2, rgba(127,127,127,0.06))',
-              fontSize: 12,
-            }}
-          >
-            <Badge variant={surfaceVariant(r.surface)}>{r.surface}</Badge>
-            <span
-              style={{ minWidth: 90, maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-              title={r.slot}
-            >
-              {r.title && r.title !== r.slot ? r.title : shortSlot(r.slot)}
-            </span>
-            <span style={{ color: 'var(--text-muted, #888)' }}>{r.model}</span>
-            <span style={{ flex: 1 }} />
-            {r.contextWindow > 0 && (
-              <span style={{ color: 'var(--text-muted, #888)' }} title={i18nT('creditUsage.contextTip')}>
-                {ctxPct}% {i18nT('creditUsage.ctxShort')}
-              </span>
-            )}
-            <span style={{ fontWeight: 700, minWidth: 56, textAlign: 'right' }}>{fmtCredits(r.credits)}</span>
-            <span style={{ color: 'var(--text-muted, #888)', minWidth: 64, textAlign: 'right' }}>
-              {relTime(r.ts)}
-            </span>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -295,36 +229,25 @@ export default function CreditUsagePage() {
     }
   }, [days])
 
-  // Tick once a second so the "updated Ns ago" label counts up between polls.
-  const [, setNowTick] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setNowTick((n) => n + 1), 1000)
-    return () => clearInterval(id)
-  }, [])
-
   const summaryQ = useQuery({
     queryKey: ['credit-usage', 'summary', days],
     queryFn: () => creditUsageApi.summary(days),
+    // The global QueryClient sets staleTime: Infinity (freshness is push-driven
+    // app-wide). Credit usage has no ws push, so opt this query back into
+    // interval polling + focus/mount refetch by making it always stale.
+    staleTime: 0,
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
-  })
-
-  const recentQ = useQuery({
-    queryKey: ['credit-usage', 'recent'],
-    queryFn: () => creditUsageApi.recent(RECENT_LIMIT),
-    refetchInterval: POLL_MS,
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   })
 
   const s = summaryQ.data
   const totals = s?.totals
   const windowTotal = totals?.windowCredits ?? 0
 
-  const qc = useQueryClient()
   const refreshNow = () => {
-    void qc.invalidateQueries({ queryKey: ['credit-usage'] })
+    void summaryQ.refetch()
   }
 
   return (
@@ -334,16 +257,13 @@ export default function CreditUsagePage() {
         <Coins size={22} />
         <h2 style={{ margin: 0, fontSize: 20 }}>{i18nT('creditUsage.title')}</h2>
         <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 12, color: 'var(--text-muted, #888)' }} title={i18nT('creditUsage.pollNote')}>
-          {relTime(new Date(summaryQ.dataUpdatedAt || Date.now()).toISOString()) || i18nT('creditUsage.updatedNow')}
-        </span>
-        {(summaryQ.isFetching || recentQ.isFetching) && (
+        {(summaryQ.isFetching) && (
           <RefreshCw size={14} className="animate-spin" style={{ opacity: 0.6 }} />
         )}
         <button
           type="button"
           onClick={refreshNow}
-          disabled={summaryQ.isFetching || recentQ.isFetching}
+          disabled={summaryQ.isFetching}
           title={i18nT('creditUsage.refresh')}
           style={{
             display: 'inline-flex',
@@ -354,9 +274,9 @@ export default function CreditUsagePage() {
             border: '1px solid var(--border, rgba(127,127,127,0.3))',
             background: 'transparent',
             color: 'inherit',
-            cursor: summaryQ.isFetching || recentQ.isFetching ? 'default' : 'pointer',
+            cursor: summaryQ.isFetching ? 'default' : 'pointer',
             fontSize: 12,
-            opacity: summaryQ.isFetching || recentQ.isFetching ? 0.6 : 1,
+            opacity: summaryQ.isFetching ? 0.6 : 1,
           }}
         >
           <RefreshCw size={13} />
@@ -458,12 +378,6 @@ export default function CreditUsagePage() {
           ) : null}
         </CardTitle>
         <TopSessionsTable rows={s?.topSessions ?? []} />
-      </Card>
-
-      {/* Live recent feed */}
-      <Card>
-        <CardTitle>{i18nT('creditUsage.recentTitle')}</CardTitle>
-        <RecentFeed rows={recentQ.data?.rows ?? []} />
       </Card>
     </div>
   )
