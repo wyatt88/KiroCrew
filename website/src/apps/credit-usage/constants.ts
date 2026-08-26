@@ -4,7 +4,7 @@ export const API_BASE = '/apps/credit-usage/api'
 // credit-pill / telemetry cadence closely enough to feel live without hammering
 // the backend (whose reads are memoized by shard signature, so a poll between
 // turns is essentially free).
-export const POLL_MS = 8000
+export const POLL_MS = 5000
 
 export const DEFAULT_WINDOW_DAYS = 30
 export const WINDOW_CHOICES = [7, 14, 30, 60, 90] as const

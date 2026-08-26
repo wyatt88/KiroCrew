@@ -136,5 +136,28 @@ def test_title_resolution_from_sessions_dir(tmp_path, monkeypatch) -> None:
     assert _server._title_for_slot("chat-7-111") == "help me fix the build"
     # unknown slot falls back to the slot itself
     assert _server._title_for_slot("chat-99-000") == "chat-99-000"
-    # subagent slots keep their slot label
-    assert _server._title_for_slot("subagent:abcd1234") == "subagent:abcd1234"
+
+
+def test_subagent_label_from_state(tmp_path, monkeypatch) -> None:
+    subdir = tmp_path / "subagents" / "abcd1234"
+    subdir.mkdir(parents=True)
+    (subdir / "state.json").write_text(
+        json.dumps(
+            {
+                "id": "abcd1234",
+                "agent": "app-market-pm",
+                "task": "verify the two key assumptions for the app",
+                "parent_session": "dashboard:chat-2-1787637786",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_server, "_subagents_dir", lambda: tmp_path / "subagents")
+    label = _server._title_for_slot("subagent:abcd1234")
+    assert label.startswith("app-market-pm · ")
+    assert "verify the two key assumptions" in label
+
+
+def test_subagent_label_falls_back_to_short_id(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(_server, "_subagents_dir", lambda: tmp_path / "nonexistent")
+    assert _server._title_for_slot("subagent:deadbeef99") == "Subagent · deadbeef"
