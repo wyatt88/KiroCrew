@@ -71,23 +71,48 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
   const max = Math.max(1, ...data.map((d) => d.credits))
   const W = 720
   const H = 160
-  const pad = 4
-  const bw = (W - pad * 2) / data.length
+  const AX = 46 // left gutter for the Y axis
+  const pad = 6
+  const plotW = W - AX - pad
+  const bw = plotW / data.length
   // Label at most ~8 ticks so the axis stays readable across window sizes.
   const step = Math.max(1, Math.ceil(data.length / 8))
+  // 5 horizontal gridlines / Y ticks: 0, 25%, 50%, 75%, 100% of max.
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, v: max * f, y: H - f * H }))
   return (
     <div style={{ width: '100%', overflowX: 'auto' }}>
       <svg
-        viewBox={`0 0 ${W} ${H + 22}`}
+        viewBox={`0 0 ${W} ${H + 24}`}
         width="100%"
-        height={H + 22}
+        height={H + 24}
         role="img"
         aria-label={i18nT('creditUsage.trendTitle')}
-        preserveAspectRatio="none"
       >
+        {/* Y axis: gridlines + tick labels */}
+        {yTicks.map((t) => (
+          <g key={t.f}>
+            <line
+              x1={AX}
+              y1={t.y}
+              x2={W - pad}
+              y2={t.y}
+              stroke="var(--border, rgba(127,127,127,0.2))"
+              strokeWidth={1}
+            />
+            <text
+              x={AX - 6}
+              y={t.y + 3}
+              textAnchor="end"
+              fontSize="9"
+              fill="var(--text-muted, #888)"
+            >
+              {fmtCredits(t.v)}
+            </text>
+          </g>
+        ))}
         {data.map((d, i) => {
-          const h = Math.max(1, (d.credits / max) * H)
-          const x = pad + i * bw
+          const h = Math.max(d.credits > 0 ? 1 : 0, (d.credits / max) * H)
+          const x = AX + i * bw
           const y = H - h
           return (
             <g key={d.date}>
@@ -105,7 +130,7 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
               {i % step === 0 && (
                 <text
                   x={x + bw / 2}
-                  y={H + 15}
+                  y={H + 16}
                   textAnchor="middle"
                   fontSize="9"
                   fill="var(--text-muted, #888)"
