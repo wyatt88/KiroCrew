@@ -246,9 +246,13 @@ export default function CreditUsagePage() {
   const totals = s?.totals
   const windowTotal = totals?.windowCredits ?? 0
 
+  const [spin, setSpin] = useState(false)
   const refreshNow = () => {
-    void summaryQ.refetch()
+    setSpin(true)
+    void summaryQ.refetch().finally(() => setTimeout(() => setSpin(false), 500))
   }
+
+  const busy = spin || summaryQ.isFetching
 
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1100, margin: '0 auto' }}>
@@ -257,13 +261,9 @@ export default function CreditUsagePage() {
         <Coins size={22} />
         <h2 style={{ margin: 0, fontSize: 20 }}>{i18nT('creditUsage.title')}</h2>
         <span style={{ flex: 1 }} />
-        {(summaryQ.isFetching) && (
-          <RefreshCw size={14} className="animate-spin" style={{ opacity: 0.6 }} />
-        )}
         <button
           type="button"
           onClick={refreshNow}
-          disabled={summaryQ.isFetching}
           title={i18nT('creditUsage.refresh')}
           style={{
             display: 'inline-flex',
@@ -274,12 +274,11 @@ export default function CreditUsagePage() {
             border: '1px solid var(--border, rgba(127,127,127,0.3))',
             background: 'transparent',
             color: 'inherit',
-            cursor: summaryQ.isFetching ? 'default' : 'pointer',
+            cursor: 'pointer',
             fontSize: 12,
-            opacity: summaryQ.isFetching ? 0.6 : 1,
           }}
         >
-          <RefreshCw size={13} />
+          <RefreshCw size={13} className={busy ? 'animate-spin' : undefined} />
           {i18nT('creditUsage.refresh')}
         </button>
         <div style={{ display: 'flex', gap: 4 }}>
