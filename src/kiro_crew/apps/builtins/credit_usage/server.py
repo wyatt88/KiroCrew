@@ -75,6 +75,11 @@ def _sessions_dir() -> Path:
     return data_home() / "sessions"
 
 
+def _subagents_dir() -> Path:
+    """The subagent run directory (one <id>/state.json per spawned subagent)."""
+    return data_home() / "subagents"
+
+
 # ---------------------------------------------------------------------------
 # Session-title resolution (slot -> human-readable name)
 # ---------------------------------------------------------------------------
@@ -178,10 +183,36 @@ def _load_title_map() -> dict[str, str]:
     return out
 
 
+def _subagent_label(sub_id: str) -> str:
+    """Human label for a ``subagent:<id>`` slot.
+
+    Reads ``subagents/<id>/state.json`` for the run's agent, task and parent
+    session. Preference: "<agent> · <task summary>", else
+    "<agent> · Subagent of <parent title>", else "Subagent · <short id>".
+    """
+    short = sub_id[:8]
+    state = _subagents_dir() / sub_id / "state.json"
+    try:
+        with state.open("r", encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return f"Subagent · {short}"
+    agent = str(d.get("agent", "") or "").strip()
+    task = " ".join(str(d.get("task", "") or "").split())  # collapse whitespace
+    parent = str(d.get("parent_session", "") or "").strip()
+    if task:
+        summary = task[:48] + ("…" if len(task) > 48 else "")
+        return f"{agent} · {summary}" if agent else f"Subagent · {summary}"
+    if parent:
+        ptitle = _load_title_map().get(_normalize_slot(parent), parent)
+        return f"{agent} · Subagent of {ptitle}" if agent else f"Subagent of {ptitle}"
+    return f"{agent} · Subagent {short}" if agent else f"Subagent · {short}"
+
+
 def _title_for_slot(slot: str) -> str:
-    """Human label for a slot: session title if known, else the slot itself."""
+    """Human label for a slot: session title, subagent label, else the slot."""
     if slot.startswith("subagent:"):
-        return slot  # subagents have no transcript/title
+        return _subagent_label(slot.split(":", 1)[1])
     return _load_title_map().get(_normalize_slot(slot), slot)
 
 
