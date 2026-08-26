@@ -799,7 +799,10 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
 
     # Go or Go All — use Python-controlled stage loop
     if slot.running:
-        slot.queue_append("Go")
+        # circular import: session_control imports this package's modules at module level.
+        from kiro_crew.dashboard.session_control import containment_meta
+
+        slot.queue_append("Go", meta=containment_meta(state, slot))
         return web.json_response({"ok": True, "queued": True})
 
     is_auto = action == "go all"

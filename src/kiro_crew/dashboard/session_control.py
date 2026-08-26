@@ -13,8 +13,12 @@ delivers a message the target runs as its next turn, redacted through
 ``sanitize_outbound`` and prefixed with a ``[sent by session … via session_send]``
 envelope so it can never render as something the person typed. An IDLE target runs
 it under the authorization that admitted it; a BUSY target queues it, and the
-generic drain re-runs no check — an accepted window, not an oversight, because a
-human-typed queued message shares it (see the spec, and issue #5911).
+generic drain re-asserts the target-side containment before the entry becomes a
+turn (issue #5911): producers stamp the constraints that held at admission
+(:func:`containment_meta`), and ``chat_runner``'s drain drops — with a visible
+notice and an SEL record — any entry for which a constraint holds at delivery
+that did not hold at admission. A human-typed queued message shares the same
+window and the same re-check.
 
 Authorization is deny-by-default and checked in one place
 (:func:`authorize_target`) for the two operations that take a target, so a guard
@@ -37,7 +41,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
-from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, SlotOrigin
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.security import redact, redact_and_truncate
@@ -166,21 +170,19 @@ def caller_slot_key(state: "DashboardState", session_key: str) -> str:
     return ""
 
 
-def _has_channel_mirror(state: "DashboardState", slot: "_ChatSlot") -> bool:
-    """Whether *slot*'s conversation is mirrored out to a channel.
+def _probe_channel_mirror(state: "DashboardState", slot: "_ChatSlot") -> bool | None:
+    """Whether *slot*'s conversation is mirrored out to a channel, or ``None``
+    when the session store could not answer.
 
-    `linked_session_key` catches a channel-BORN slot. It does not catch a
-    dashboard-born slot that was later given an OUTBOUND mirror link, which
-    reaches a channel just as surely: the link lives in the session store, not
-    on the slot, so a slot with an empty `linked_session_key` can still be
-    republishing every turn to Slack or Telegram.
+    The tri-state exists because the two consumers need OPPOSITE fail-closed
+    treatments of an unreadable store, and a collapsed boolean forces one of
+    them to lie: the refusal paths must treat unknown as mirrored (refuse rather
+    than open the boundary), while the queue-drain notice must not claim "the
+    session gained a mirror" for a state change that is merely unverifiable.
 
     Read on the EFFECTIVE session key, because that is the key the mirror is
     registered under -- the slot key would miss a mirror on a session whose turns
     run under a different identity.
-
-    Best-effort by design: a store that cannot answer is treated as mirrored, so
-    an unreadable link fails closed rather than opening the boundary.
     """
     sessions = getattr(state, "sessions", None)
     getter = getattr(sessions, "get_mirror_link", None)
@@ -189,8 +191,223 @@ def _has_channel_mirror(state: "DashboardState", slot: "_ChatSlot") -> bool:
     try:
         return bool(getter(slot_history_key(slot)))
     except Exception:
-        logger.debug("mirror-link probe failed; treating as mirrored", exc_info=True)
-        return True
+        logger.debug("mirror-link probe failed", exc_info=True)
+        return None
+
+
+def _has_channel_mirror(
+    state: "DashboardState", slot: "_ChatSlot", *, on_probe_failure: bool = True
+) -> bool:
+    """Boolean view of :func:`_probe_channel_mirror` for the refusal paths.
+
+    `linked_session_key` catches a channel-BORN slot. It does not catch a
+    dashboard-born slot that was later given an OUTBOUND mirror link, which
+    reaches a channel just as surely: the link lives in the session store, not
+    on the slot, so a slot with an empty `linked_session_key` can still be
+    republishing every turn to Slack or Telegram.
+
+    Best-effort by design: a store that cannot answer returns *on_probe_failure*,
+    and the default (``True``) keeps the refusal paths failing closed -- an
+    unreadable link is treated as mirrored rather than opening the boundary.
+    The enqueue-time containment snapshot passes ``False`` because ITS fail-closed
+    direction is inverted: recording "not mirrored" for an unreadable link is the
+    least-authorized admission state, so the drain-side re-check re-validates the
+    entry instead of waving it through (see :func:`containment_snapshot`).
+    """
+    probed = _probe_channel_mirror(state, slot)
+    return on_probe_failure if probed is None else probed
+
+
+# ── Drain-time re-validation of queued prompts (issue #5911) ──
+#
+# Authorization is decided when a prompt is ADMITTED — `authorize_target` for
+# `session_send`, the authenticated composer for a human — but a busy target
+# QUEUES the prompt and delivers it later, and the containment those decisions
+# rest on can change in between: a target authorized while unlinked can gain a
+# channel or mirror link before its queue drains, and the queued prompt would
+# then execute and republish to an audience its admission never contemplated.
+# Producers stamp the constraints that held at admission on the queue entry
+# (`containment_meta`); `chat_runner`'s drain recomputes them and drops any
+# entry for which a constraint holds at delivery that did not hold at admission.
+
+# Queue-entry meta key carrying the admission-time containment snapshot.
+QUEUED_CONTAINMENT_META_KEY = "queued_containment"
+
+# Transcript-notice phrasing per snapshot field, for the drop notice a reader
+# of the session must be able to understand without knowing this module.
+_CONTAINMENT_CHANGE_LABELS = {
+    "linked": "the session was linked to a channel",
+    "mirrored": "the session gained an outbound channel mirror",
+    "crew": "the session was switched to crew mode",
+    "ephemeral": "the session became incognito/temporary",
+    "app": "the session became app-scoped",
+    "unattended": "the session became unattended",
+    "workspace": "the session moved to a different workspace",
+}
+
+
+# Snapshot keys that are NOT constraints: carried for notice wording and
+# telemetry only, never compared by :func:`newly_held_constraints`.
+_NON_CONSTRAINT_KEYS = frozenset({"mirror_unverified"})
+
+# The audience constraints: who can SEE this session's turns. A directive
+# user-origin entry (typed through an authenticated human entry point — the
+# provenance ``queue_append`` already tracks fail-closed) is exempt from these
+# two at the drain: the human who authored the message is the same authority
+# who links or mirrors their own session, so the widened audience is their own
+# deliberate act, not a bypass of an authorization decision. `session_send`
+# and automation entries never carry the flag and stay fully enforced — they
+# are the case issue #5911 exists for.
+_AUDIENCE_CONSTRAINTS = frozenset({"linked", "mirrored"})
+
+
+def containment_snapshot(
+    state: "DashboardState", slot: "_ChatSlot", *, on_probe_failure: bool
+) -> dict[str, Any]:
+    """The target-side containment constraints of :func:`authorize_target`, as
+    they hold for *slot* right now.
+
+    Two call sites with OPPOSITE fail-closed directions, hence the mandatory
+    ``on_probe_failure``: the enqueue-time snapshot passes ``False`` so an
+    unreadable mirror link records the least-authorized admission state (the
+    drain then re-validates the entry), while the drain-time snapshot passes
+    ``True`` so an unreadable link refuses delivery rather than opening the
+    boundary. When the drain-side probe fails, ``mirror_unverified`` is set so
+    the drop notice can say the state could not be verified instead of claiming
+    a mirror appeared — the refusal is the same, the wording must not lie.
+    Every other field is a plain slot attribute read that cannot fail.
+
+    ``workspace`` is the seventh refusal (:func:`authorize_target`'s
+    ``workspace_mismatch``), an identity rather than a boolean: a CHANGE — the
+    slot moving to another workspace while the entry waited — invalidates the
+    admission, because the prompt would run with memory, lessons and project
+    context its admission never saw. It is compared only when the entry
+    recorded one; the unmarked fail-closed baseline stays the boolean set,
+    since there is no least-authorized workspace to assume.
+
+    ``unattended`` keys on the slot-key prefix exactly as ``authorize_target``
+    does. A slot key is immutable, so this field can never flip between enqueue
+    and drain for a TAGGED entry — it is carried for the unmarked fail-closed
+    path, where the baseline is all-False and any held constraint must count.
+    """
+    probed = _probe_channel_mirror(state, slot)
+    snap: dict[str, Any] = {
+        "linked": bool(getattr(slot, "linked_session_key", "")),
+        "mirrored": on_probe_failure if probed is None else probed,
+        "crew": getattr(slot, "mode", "") == "crew",
+        "ephemeral": getattr(slot, "memory_mode", "persistent") != "persistent",
+        "app": bool(getattr(slot, "_app", "")),
+        "unattended": str(getattr(slot, "key", "")).startswith(UNATTENDED_SLOT_PREFIXES),
+        "workspace": str(getattr(slot, "workspace", "default") or "default"),
+    }
+    if probed is None and on_probe_failure:
+        snap["mirror_unverified"] = True
+    return snap
+
+
+def containment_meta(state: "DashboardState", slot: "_ChatSlot") -> dict[str, Any]:
+    """Queue-entry ``meta`` recording the containment that held at admission.
+
+    Every producer of a plain (user-speech) queue entry stamps this at enqueue;
+    the drain compares it against the constraints holding at delivery and drops
+    the entry when one is newly held (:func:`newly_held_constraints`). An entry
+    without the stamp fails closed — it is checked against the full
+    current-constraint set — so an untagged producer can never ride a queued
+    prompt past a boundary the tagged paths respect.
+    """
+    return {QUEUED_CONTAINMENT_META_KEY: containment_snapshot(state, slot, on_probe_failure=False)}
+
+
+def newly_held_constraints(
+    now: dict[str, Any], entry_meta: Any, *, directive_user_origin: bool = False
+) -> list[str]:
+    """Containment constraints in *now* that the entry's admission never saw.
+
+    *now* is the drain-time :func:`containment_snapshot`; *entry_meta* is the
+    queue entry's ``meta`` (any shape — untrusted plumbing, so a missing or
+    malformed snapshot degrades to the all-False baseline and the entry is
+    checked against every currently-held boolean constraint, failing closed).
+
+    A constraint recorded ``True`` at admission is not a change: the prompt was
+    knowingly admitted under it (a human typing into a channel-born session, an
+    app relaying into its own slot), and dropping it would refuse designed
+    behaviour rather than close a window.
+
+    ``workspace`` compares by identity and only when the entry recorded one —
+    an unmarked entry has no least-authorized workspace to assume, so its
+    fail-closed floor stays the boolean set.
+
+    *directive_user_origin* exempts the AUDIENCE constraints (linked/mirrored)
+    for entries carrying the authenticated-human provenance flag: the author is
+    the person who widened their own session's audience, and dropping their
+    already-typed messages when they link the session would destroy user speech
+    on a supported flow (``api_chat`` applies no linked refusal to composer
+    input). Every other constraint — crew, ephemeral, app, unattended,
+    workspace — still applies to them.
+    """
+    recorded: dict[str, Any] = {}
+    if isinstance(entry_meta, dict):
+        raw = entry_meta.get(QUEUED_CONTAINMENT_META_KEY)
+        if isinstance(raw, dict):
+            recorded = raw
+    changed: list[str] = []
+    for name, value in now.items():
+        if name in _NON_CONSTRAINT_KEYS:
+            continue
+        if name == "workspace":
+            admitted_ws = recorded.get("workspace")
+            if isinstance(admitted_ws, str) and admitted_ws != value:
+                changed.append(name)
+            continue
+        if directive_user_origin and name in _AUDIENCE_CONSTRAINTS:
+            continue
+        if value and not bool(recorded.get(name, False)):
+            changed.append(name)
+    return changed
+
+
+def describe_containment_change(constraints: list[str], *, mirror_unverified: bool = False) -> str:
+    """One transcript-ready phrase naming what changed, for the drop notice.
+
+    *mirror_unverified* swaps the mirrored wording: when the drain-side probe
+    failed, the refusal stands (fail closed) but the notice must describe an
+    unverifiable state, not assert a mirror appeared.
+    """
+    labels = dict(_CONTAINMENT_CHANGE_LABELS)
+    if mirror_unverified:
+        labels["mirrored"] = "the session's channel-mirror state could not be verified"
+    return "; ".join(labels.get(c, c) for c in constraints)
+
+
+def audit_queued_drop(slot: "_ChatSlot", queue_id: str, constraints: list[str]) -> None:
+    """Record one drain-time drop in the SEL, best-effort and off the loop.
+
+    Logged as a denied tool invocation on the TARGET's EFFECTIVE session — a
+    linked slot's turns run under ``linked_session_key``, so filing under the
+    slot key would hide exactly the drops this feature exists to record. The
+    slot key stays in ``resources``/``metadata``. The admission-time caller may
+    be long gone, so there is no caller identity to attribute the drop to.
+    """
+    slot_key = str(getattr(slot, "key", ""))
+    session_key = effective_session_key(slot)
+
+    def _do() -> None:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            agent="",
+            source="dashboard",
+            tool_name="queue_drain_revalidation",
+            tool_kind="command",
+            outcome="denied",
+            resources=f"target={slot_key}",
+            metadata={
+                "target": slot_key,
+                "queue_id": queue_id,
+                "newly_held": ",".join(constraints),
+            },
+        )
+
+    _sel_off_loop(_do, "queue-drain revalidation audit")
 
 
 def _refuse_ineligible_creator(state: "DashboardState", caller_slot: "_ChatSlot") -> None:
@@ -885,6 +1102,10 @@ async def send_to_target(
     a busy one queues the message for its next turn. Both outcomes are reported
     distinctly — ``started`` says which happened — because "it ran" and "it will
     run later" must not look the same to a caller coordinating several sessions.
+    A queued delivery is re-validated at the drain (issue #5911): the entry
+    carries the containment that held here, and a constraint newly held at
+    delivery time drops it with a visible notice instead of executing it under
+    the weaker authorization that admitted it.
 
     The turn is NOT charged against the background-turn cap, and deliberately so:
     that cap only binds unattended (app-owned) slots, and every target this
