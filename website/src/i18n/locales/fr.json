@@ -5009,7 +5009,7 @@
     "alertSave": "Enregistrer",
     "alertTodayVsTrigger": "Aujourd’hui {{today}} / seuil {{trigger}}",
     "alertOver": "Dépassé",
-    "alertHint": "Une tâche en arrière-plan vérifie chaque heure et envoie une notification quand les crédits du jour dépassent le seuil.",
+    "alertHint": "Une tâche en arrière-plan vérifie toutes les 2 minutes et envoie une notification quand les crédits du jour dépassent le seuil.",
     "alertPctOfTrigger": "{{pct}}% du seuil"
   },
   "components": {

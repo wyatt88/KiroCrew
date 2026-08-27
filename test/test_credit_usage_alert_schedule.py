@@ -66,7 +66,7 @@ async def test_enable_creates_hourly_job_and_installs_script(isolated):
     jobs = _jobs(svc)
     assert len(jobs) == 1
     job = jobs[0]
-    assert job.schedule.cron_expr == "0 * * * *"
+    assert job.schedule.every_secs == 120
     assert job.script.endswith("credit_usage_alert.py:run")
     assert job.hide_in_chat is True
     assert job.minimal_context is True

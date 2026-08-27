@@ -422,7 +422,7 @@ async def api_credit_usage_alert_schedule(request: web.Request) -> web.Response:
             # message is passed to the script as ctx.message; the checker reads
             # its config from disk, so the body is only a human-readable label.
             "Check today's credit spend against the daily alert threshold.",
-            cron_expr="0 * * * *",  # hourly, on the hour
+            every_secs=120,  # check every 2 minutes so a threshold crossing surfaces quickly
             script=script_spec,
             minimal_context=True,
             hide_in_chat=True,
