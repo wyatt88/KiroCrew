@@ -4165,7 +4165,8 @@
     "alertSave": "保存",
     "alertTodayVsTrigger": "今日 {{today}} / 触发线 {{trigger}}",
     "alertOver": "已超",
-    "alertHint": "后台任务每小时检查一次，今日 credits 越过触发线就发一条 dashboard 通知。"
+    "alertHint": "后台任务每小时检查一次，今日 credits 越过触发线就发一条 dashboard 通知。",
+    "alertPctOfTrigger": "已达触发线 {{pct}}%"
   },
   "components": {
     "kiroAccountModal": {

@@ -4293,7 +4293,8 @@
     "alertSave": "Salvar",
     "alertTodayVsTrigger": "Hoje {{today}} / dispara em {{trigger}}",
     "alertOver": "Excedido",
-    "alertHint": "Uma tarefa em segundo plano verifica a cada hora e envia uma notificação quando os créditos de hoje ultrapassam o gatilho."
+    "alertHint": "Uma tarefa em segundo plano verifica a cada hora e envia uma notificação quando os créditos de hoje ultrapassam o gatilho.",
+    "alertPctOfTrigger": "{{pct}}% do gatilho"
   },
   "components": {
     "kiroAccountModal": {
