@@ -5001,7 +5001,15 @@
     "daysChoice": "{{n}} j",
     "noData": "Aucune utilisation enregistrée pour l’instant.",
     "loadError": "Impossible de charger l’utilisation.",
-    "refresh": "Actualiser"
+    "refresh": "Actualiser",
+    "alertTitle": "Alerte de dépense quotidienne",
+    "alertEnable": "Activer",
+    "alertThreshold": "Seuil (crédits)",
+    "alertRatio": "Notifier à",
+    "alertSave": "Enregistrer",
+    "alertTodayVsTrigger": "Aujourd’hui {{today}} / seuil {{trigger}}",
+    "alertOver": "Dépassé",
+    "alertHint": "Une tâche en arrière-plan vérifie chaque heure et envoie une notification quand les crédits du jour dépassent le seuil."
   },
   "components": {
     "crewWakeSection": {

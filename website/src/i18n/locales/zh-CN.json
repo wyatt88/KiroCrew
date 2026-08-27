@@ -4833,7 +4833,15 @@
     "daysChoice": "{{n}} 天",
     "noData": "暂无用量记录。",
     "loadError": "无法加载用量。",
-    "refresh": "刷新"
+    "refresh": "刷新",
+    "alertTitle": "每日消耗预警",
+    "alertEnable": "启用",
+    "alertThreshold": "阈值（credits）",
+    "alertRatio": "通知比例",
+    "alertSave": "保存",
+    "alertTodayVsTrigger": "今日 {{today}} / 触发线 {{trigger}}",
+    "alertOver": "已超",
+    "alertHint": "后台任务每小时检查一次，今日 credits 越过触发线就发一条 dashboard 通知。"
   },
   "components": {
     "crewWakeSection": {

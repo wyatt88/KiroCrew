@@ -4833,7 +4833,15 @@
     "daysChoice": "{{n}}일",
     "noData": "아직 사용량 기록이 없습니다.",
     "loadError": "사용량을 불러오지 못했습니다.",
-    "refresh": "새로고침"
+    "refresh": "새로고침",
+    "alertTitle": "일일 소비 알림",
+    "alertEnable": "사용",
+    "alertThreshold": "임계값 (크레딧)",
+    "alertRatio": "알림 비율",
+    "alertSave": "저장",
+    "alertTodayVsTrigger": "오늘 {{today}} / 발동 {{trigger}}",
+    "alertOver": "초과",
+    "alertHint": "백그라운드 작업이 매시간 확인하여 오늘 크레딧이 발동 지점을 넘으면 대시보드 알림을 보냅니다."
   },
   "components": {
     "crewWakeSection": {

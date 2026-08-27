@@ -4917,7 +4917,15 @@
     "daysChoice": "{{n}} T.",
     "noData": "Noch keine Nutzung erfasst.",
     "loadError": "Nutzung konnte nicht geladen werden.",
-    "refresh": "Aktualisieren"
+    "refresh": "Aktualisieren",
+    "alertTitle": "Tages-Verbrauchsalarm",
+    "alertEnable": "Aktivieren",
+    "alertThreshold": "Schwelle (Credits)",
+    "alertRatio": "Benachrichtigen bei",
+    "alertSave": "Speichern",
+    "alertTodayVsTrigger": "Heute {{today}} / Auslöser {{trigger}}",
+    "alertOver": "Überschritten",
+    "alertHint": "Ein Hintergrundjob prüft stündlich und sendet eine Dashboard-Benachrichtigung, sobald die heutigen Credits den Auslöser überschreiten."
   },
   "components": {
     "crewWakeSection": {

@@ -5001,7 +5001,15 @@
     "daysChoice": "{{n}} d",
     "noData": "Nenhum uso registrado ainda.",
     "loadError": "Não foi possível carregar o uso.",
-    "refresh": "Atualizar"
+    "refresh": "Atualizar",
+    "alertTitle": "Alerta de gasto diário",
+    "alertEnable": "Ativar",
+    "alertThreshold": "Limite (créditos)",
+    "alertRatio": "Notificar em",
+    "alertSave": "Salvar",
+    "alertTodayVsTrigger": "Hoje {{today}} / dispara em {{trigger}}",
+    "alertOver": "Excedido",
+    "alertHint": "Uma tarefa em segundo plano verifica a cada hora e envia uma notificação quando os créditos de hoje ultrapassam o gatilho."
   },
   "components": {
     "crewWakeSection": {

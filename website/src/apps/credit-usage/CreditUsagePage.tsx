@@ -8,15 +8,16 @@
 // free). Credits are provider-reported, not derived from tokens, so everything
 // here is a straight sum of the `credits` field.
 import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Coins, Cpu, Layers, RefreshCw, Users } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Bell, Coins, Cpu, Layers, RefreshCw, Users } from 'lucide-react'
 
 import { Badge, Card, CardTitle, StatCard } from '../../components/ui'
+import SimpleSelect from '../../components/SimpleSelect'
 import { i18nT } from '../../i18n/t'
 
 import { creditUsageApi } from './api'
 import { DEFAULT_WINDOW_DAYS, POLL_MS, STORAGE_KEY, WINDOW_CHOICES } from './constants'
-import type { BreakdownRow, SummaryResponse, TopSession } from './types'
+import type { AlertConfig, BreakdownRow, SummaryResponse, TopSession } from './types'
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -71,23 +72,48 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
   const max = Math.max(1, ...data.map((d) => d.credits))
   const W = 720
   const H = 160
-  const pad = 4
-  const bw = (W - pad * 2) / data.length
+  const AX = 46 // left gutter for the Y axis
+  const pad = 6
+  const plotW = W - AX - pad
+  const bw = plotW / data.length
   // Label at most ~8 ticks so the axis stays readable across window sizes.
   const step = Math.max(1, Math.ceil(data.length / 8))
+  // 5 horizontal gridlines / Y ticks: 0, 25%, 50%, 75%, 100% of max.
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, v: max * f, y: H - f * H }))
   return (
     <div style={{ width: '100%', overflowX: 'auto' }}>
       <svg
-        viewBox={`0 0 ${W} ${H + 22}`}
+        viewBox={`0 0 ${W} ${H + 24}`}
         width="100%"
-        height={H + 22}
+        height={H + 24}
         role="img"
         aria-label={i18nT('creditUsage.trendTitle')}
-        preserveAspectRatio="none"
       >
+        {/* Y axis: gridlines + tick labels */}
+        {yTicks.map((t) => (
+          <g key={t.f}>
+            <line
+              x1={AX}
+              y1={t.y}
+              x2={W - pad}
+              y2={t.y}
+              stroke="var(--border, rgba(127,127,127,0.2))"
+              strokeWidth={1}
+            />
+            <text
+              x={AX - 6}
+              y={t.y + 3}
+              textAnchor="end"
+              fontSize="9"
+              fill="var(--text-muted, #888)"
+            >
+              {fmtCredits(t.v)}
+            </text>
+          </g>
+        ))}
         {data.map((d, i) => {
-          const h = Math.max(1, (d.credits / max) * H)
-          const x = pad + i * bw
+          const h = Math.max(d.credits > 0 ? 1 : 0, (d.credits / max) * H)
+          const x = AX + i * bw
           const y = H - h
           return (
             <g key={d.date}>
@@ -105,7 +131,7 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
               {i % step === 0 && (
                 <text
                   x={x + bw / 2}
-                  y={H + 15}
+                  y={H + 16}
                   textAnchor="middle"
                   fontSize="9"
                   fill="var(--text-muted, #888)"
@@ -204,6 +230,160 @@ function TopSessionsTable({ rows }: { rows: TopSession[] }) {
         </tbody>
       </table>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Alert settings — daily threshold + notify ratio (checked by a background cron)
+// ---------------------------------------------------------------------------
+
+function AlertSettings() {
+  const qc = useQueryClient()
+  const cfgQ = useQuery({
+    queryKey: ['credit-usage', 'alert-config'],
+    queryFn: () => creditUsageApi.getAlertConfig(),
+    staleTime: 0,
+  })
+  const todayQ = useQuery({
+    queryKey: ['credit-usage', 'today'],
+    queryFn: () => creditUsageApi.today(),
+    refetchInterval: POLL_MS,
+    staleTime: 0,
+  })
+
+  const [enabled, setEnabled] = useState(false)
+  const [threshold, setThreshold] = useState('')
+  const [ratio, setRatio] = useState(80)
+  const [dirty, setDirty] = useState(false)
+
+  useEffect(() => {
+    if (cfgQ.data && !dirty) {
+      setEnabled(cfgQ.data.enabled)
+      setThreshold(cfgQ.data.threshold ? String(cfgQ.data.threshold) : '')
+      setRatio(Math.round((cfgQ.data.ratio || 0.8) * 100))
+    }
+  }, [cfgQ.data, dirty])
+
+  const save = useMutation({
+    mutationFn: (cfg: AlertConfig) => creditUsageApi.saveAlertConfig(cfg),
+    onSuccess: () => {
+      setDirty(false)
+      void qc.invalidateQueries({ queryKey: ['credit-usage', 'alert-config'] })
+    },
+  })
+
+  const thr = parseFloat(threshold) || 0
+  const trigger = thr * (ratio / 100)
+  const todayCredits = todayQ.data?.credits ?? 0
+  const pctOfTrigger = trigger > 0 ? Math.min(100, Math.round((todayCredits / trigger) * 100)) : 0
+  const over = enabled && trigger > 0 && todayCredits >= trigger
+
+  return (
+    <Card>
+      <CardTitle>
+        <Bell size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+        {i18nT('creditUsage.alertTitle')}
+      </CardTitle>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 16 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => {
+              setEnabled(e.target.checked)
+              setDirty(true)
+            }}
+          />
+          {i18nT('creditUsage.alertEnable')}
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
+          <span style={{ color: 'var(--text-muted, #888)' }}>{i18nT('creditUsage.alertThreshold')}</span>
+          <input
+            type="number"
+            min={0}
+            step={10}
+            value={threshold}
+            onChange={(e) => {
+              setThreshold(e.target.value)
+              setDirty(true)
+            }}
+            placeholder="e.g. 500"
+            style={{
+              width: 110,
+              padding: '4px 8px',
+              borderRadius: 6,
+              border: '1px solid var(--border, rgba(127,127,127,0.3))',
+              background: 'transparent',
+              color: 'inherit',
+              fontSize: 13,
+            }}
+          />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12 }}>
+          <span style={{ color: 'var(--text-muted, #888)' }}>{i18nT('creditUsage.alertRatio')}</span>
+          <SimpleSelect
+            aria-label={i18nT('creditUsage.alertRatio')}
+            options={['50', '60', '70', '80', '90', '100']}
+            optionLabels={['50%', '60%', '70%', '80%', '90%', '100%']}
+            value={String(ratio)}
+            onChange={(v) => {
+              setRatio(Number(v))
+              setDirty(true)
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => save.mutate({ enabled, threshold: thr, ratio: ratio / 100 })}
+          disabled={save.isPending || !dirty}
+          style={{
+            padding: '6px 14px',
+            borderRadius: 6,
+            border: '1px solid var(--accent, #6366f1)',
+            background: dirty ? 'var(--accent, #6366f1)' : 'transparent',
+            color: dirty ? '#fff' : 'var(--text-muted, #888)',
+            cursor: dirty && !save.isPending ? 'pointer' : 'default',
+            fontSize: 13,
+          }}
+        >
+          {save.isPending ? '…' : i18nT('creditUsage.alertSave')}
+        </button>
+      </div>
+      {enabled && trigger > 0 && (
+        <div style={{ marginTop: 12, fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ color: 'var(--text-muted, #888)' }}>
+              {i18nT('creditUsage.alertTodayVsTrigger', {
+                today: fmtCredits(todayCredits),
+                trigger: fmtCredits(trigger),
+              })}
+            </span>
+            <span style={{ color: over ? 'var(--danger, #e11d48)' : 'var(--text-muted, #888)', fontWeight: 600 }}>
+              {over ? i18nT('creditUsage.alertOver') : `${pctOfTrigger}%`}
+            </span>
+          </div>
+          <div
+            style={{
+              height: 8,
+              borderRadius: 4,
+              background: 'var(--surface-2, rgba(127,127,127,0.15))',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${pctOfTrigger}%`,
+                height: '100%',
+                background: over ? 'var(--danger, #e11d48)' : 'var(--accent, #6366f1)',
+              }}
+            />
+          </div>
+          <div style={{ marginTop: 6, color: 'var(--text-muted, #888)' }}>
+            {i18nT('creditUsage.alertHint')}
+          </div>
+        </div>
+      )}
+    </Card>
   )
 }
 
@@ -334,6 +514,9 @@ export default function CreditUsagePage() {
           title={i18nT('creditUsage.statTurnsTip')}
         />
       </div>
+
+      {/* Alert settings */}
+      <AlertSettings />
 
       {/* Trend */}
       <Card>

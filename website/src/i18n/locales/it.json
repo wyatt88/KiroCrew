@@ -5001,7 +5001,15 @@
     "daysChoice": "{{n}} g",
     "noData": "Nessun utilizzo registrato finora.",
     "loadError": "Impossibile caricare l’utilizzo.",
-    "refresh": "Aggiorna"
+    "refresh": "Aggiorna",
+    "alertTitle": "Avviso di spesa giornaliera",
+    "alertEnable": "Attiva",
+    "alertThreshold": "Soglia (crediti)",
+    "alertRatio": "Notifica a",
+    "alertSave": "Salva",
+    "alertTodayVsTrigger": "Oggi {{today}} / soglia {{trigger}}",
+    "alertOver": "Superato",
+    "alertHint": "Un processo in background controlla ogni ora e invia una notifica quando i crediti di oggi superano la soglia."
   },
   "components": {
     "crewWakeSection": {

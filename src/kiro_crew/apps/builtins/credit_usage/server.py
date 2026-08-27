@@ -70,6 +70,62 @@ def _tokens_dir() -> Path:
     return data_home() / "usage" / "tokens"
 
 
+def _alert_config_path() -> Path:
+    """Where the daily-spend alert config lives (threshold + notify ratio)."""
+    return data_home() / "usage" / "credit_alert.json"
+
+
+_ALERT_DEFAULT = {"enabled": False, "threshold": 0.0, "ratio": 0.8}
+
+
+def _read_alert_config() -> dict[str, Any]:
+    """Read the alert config, falling back to a safe disabled default."""
+    try:
+        with _alert_config_path().open("r", encoding="utf-8") as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            return dict(_ALERT_DEFAULT)
+        return {
+            "enabled": bool(d.get("enabled", False)),
+            "threshold": max(0.0, float(d.get("threshold", 0.0) or 0.0)),
+            "ratio": min(1.0, max(0.01, float(d.get("ratio", 0.8) or 0.8))),
+        }
+    except (OSError, ValueError):
+        return dict(_ALERT_DEFAULT)
+
+
+def _write_alert_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Persist the alert config (atomic tmp+rename); returns the stored dict."""
+    out = {
+        "enabled": bool(cfg.get("enabled", False)),
+        "threshold": max(0.0, float(cfg.get("threshold", 0.0) or 0.0)),
+        "ratio": min(1.0, max(0.01, float(cfg.get("ratio", 0.8) or 0.8))),
+    }
+    path = _alert_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(out, f)
+    tmp.replace(path)
+    return out
+
+
+def _today_credits(tz_offset_min: int) -> dict[str, Any]:
+    """Sum today's credits (in the client's local day) across all shards."""
+    tz = timezone(timedelta(minutes=tz_offset_min))
+    today = datetime.now(tz).date()
+    total = 0.0
+    turns = 0
+    for row in _load_rows():
+        dt = _parse_ts(str(row.get("ts", "")))
+        if dt is None:
+            continue
+        if dt.astimezone(tz).date() == today:
+            total += _credits(row)
+            turns += 1
+    return {"date": today.isoformat(), "credits": round(total, 4), "turns": turns}
+
+
 def _sessions_dir() -> Path:
     """The chat-session transcript directory (one <safe_key>.jsonl per session)."""
     return data_home() / "sessions"
@@ -529,6 +585,29 @@ class CreditUsageHandler(BaseHTTPRequestHandler):
             # the (reverse-proxied, browser-facing) client (CWE-209).
             self._json(500, {"error": "internal error", "id": corr})
 
+    def do_POST(self) -> None:  # noqa: N802
+        # Read the body first; the proxy HMAC is computed over it.
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except (TypeError, ValueError):
+            length = 0
+        length = max(0, min(length, 64 * 1024))  # cap body size
+        self._post_body = self.rfile.read(length) if length else b""
+        if not verify_proxy_request(
+            self.headers.get("X-KiroCrew-Proxy", ""),
+            method="POST",
+            target=self.path,
+            body=self._post_body,
+        ):
+            _sel_audit("proxy_auth_failed", self.path, outcome="denied")
+            return self._json(401, {"error": "unauthorized"})
+        try:
+            self._dispatch("POST")
+        except Exception:  # noqa: BLE001
+            corr = uuid.uuid4().hex[:12]
+            logger.exception("POST %s failed [%s]", self.path, corr)
+            self._json(500, {"error": "internal error", "id": corr})
+
     def _dispatch(self, method: str) -> None:
         url = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(url.query)
@@ -550,6 +629,13 @@ class CreditUsageHandler(BaseHTTPRequestHandler):
             return self._h_summary(qs)
         if method == "GET" and route == "/recent":
             return self._h_recent(qs)
+        if method == "GET" and route == "/today":
+            tz_off = _clamp_int((qs.get("tz") or ["0"])[0], -14 * 60, 14 * 60, 0)
+            return self._json(200, _today_credits(tz_off))
+        if method == "GET" and route == "/alert-config":
+            return self._json(200, _read_alert_config())
+        if method == "POST" and route == "/alert-config":
+            return self._h_save_alert(qs)
         return self._json(404, {"error": f"{method} {route} not found"})
 
     def _h_summary(self, qs: dict[str, list[str]]) -> None:
@@ -566,6 +652,18 @@ class CreditUsageHandler(BaseHTTPRequestHandler):
         rows = _load_rows()
         _sel_audit("usage_recent", f"limit={limit}")
         return self._json(200, {"rows": _recent(rows, limit), "totalRows": len(rows)})
+
+    def _h_save_alert(self, qs: dict[str, list[str]]) -> None:
+        body = getattr(self, "_post_body", b"")
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except ValueError:
+            return self._json(400, {"error": "invalid JSON body"})
+        if not isinstance(payload, dict):
+            return self._json(400, {"error": "expected a JSON object"})
+        stored = _write_alert_config(payload)
+        _sel_audit("alert_config_save", f"enabled={stored['enabled']} threshold={stored['threshold']}")
+        return self._json(200, stored)
 
     def _json(self, code: int, payload) -> None:
         body = json.dumps(payload).encode("utf-8")

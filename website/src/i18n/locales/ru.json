@@ -5085,7 +5085,15 @@
     "daysChoice": "{{n}} дн.",
     "noData": "Расход пока не зафиксирован.",
     "loadError": "Не удалось загрузить расход.",
-    "refresh": "Обновить"
+    "refresh": "Обновить",
+    "alertTitle": "Оповещение о дневном расходе",
+    "alertEnable": "Включить",
+    "alertThreshold": "Порог (кредиты)",
+    "alertRatio": "Уведомить при",
+    "alertSave": "Сохранить",
+    "alertTodayVsTrigger": "Сегодня {{today}} / порог {{trigger}}",
+    "alertOver": "Превышено",
+    "alertHint": "Фоновая задача проверяет ежечасно и отправляет уведомление, когда сегодняшние кредиты превышают порог."
   },
   "components": {
     "crewWakeSection": {

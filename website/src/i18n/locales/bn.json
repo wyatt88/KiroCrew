@@ -4917,7 +4917,15 @@
     "daysChoice": "{{n}} দিন",
     "noData": "এখনও কোনো ব্যবহার রেকর্ড হয়নি।",
     "loadError": "ব্যবহার লোড করা যায়নি।",
-    "refresh": "রিফ্রেশ"
+    "refresh": "রিফ্রেশ",
+    "alertTitle": "দৈনিক খরচ সতর্কতা",
+    "alertEnable": "সক্রিয় করুন",
+    "alertThreshold": "থ্রেশহোল্ড (ক্রেডিট)",
+    "alertRatio": "যখন জানান",
+    "alertSave": "সংরক্ষণ",
+    "alertTodayVsTrigger": "আজ {{today}} / ট্রিগার {{trigger}}",
+    "alertOver": "অতিক্রান্ত",
+    "alertHint": "একটি ব্যাকগ্রাউন্ড জব প্রতি ঘণ্টায় পরীক্ষা করে এবং আজকের ক্রেডিট ট্রিগার ছাড়ালে ড্যাশবোর্ড নোটিফিকেশন পাঠায়।"
   },
   "components": {
     "crewWakeSection": {
