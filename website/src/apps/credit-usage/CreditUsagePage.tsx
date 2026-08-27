@@ -70,11 +70,15 @@ function shortSlot(slot: string): string {
 function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
   if (!data.length) return null
   const max = Math.max(1, ...data.map((d) => d.credits))
-  const W = 720
   const H = 160
   const AX = 46 // left gutter for the Y axis
   const pad = 6
-  const plotW = W - AX - pad
+  // Fixed width per day so wide windows (60d/90d) overflow the card and scroll
+  // horizontally instead of squashing every bar. Small windows still fill width
+  // (the container min-width via the wrapper), but we cap the minimum plot width.
+  const BAR_W = 26
+  const plotW = Math.max(data.length * BAR_W, 320)
+  const W = AX + plotW + pad
   const bw = plotW / data.length
   // Label at most ~8 ticks so the axis stays readable across window sizes.
   const step = Math.max(1, Math.ceil(data.length / 8))
@@ -84,8 +88,9 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
     <div style={{ width: '100%', overflowX: 'auto' }}>
       <svg
         viewBox={`0 0 ${W} ${H + 24}`}
-        width="100%"
+        width={W}
         height={H + 24}
+        style={{ display: 'block', maxWidth: 'none' }}
         role="img"
         aria-label={i18nT('creditUsage.trendTitle')}
       >
