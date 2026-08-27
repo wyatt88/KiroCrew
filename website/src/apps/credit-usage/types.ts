@@ -65,3 +65,15 @@ export interface RecentResponse {
   rows: RecentRow[]
   totalRows: number
 }
+
+export interface AlertConfig {
+  enabled: boolean
+  threshold: number
+  ratio: number
+}
+
+export interface TodayResponse {
+  date: string
+  credits: number
+  turns: number
+}

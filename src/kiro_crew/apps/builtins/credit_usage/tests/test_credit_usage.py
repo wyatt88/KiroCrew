@@ -106,6 +106,41 @@ def test_empty_history_is_safe() -> None:
     assert _server._recent([], limit=10) == []
 
 
+def test_alert_config_roundtrip(tmp_path, monkeypatch) -> None:
+    cfg_path = tmp_path / "usage" / "credit_alert.json"
+    monkeypatch.setattr(_server, "_alert_config_path", lambda: cfg_path)
+    # default when absent
+    assert _server._read_alert_config() == {"enabled": False, "threshold": 0.0, "ratio": 0.8}
+    # write clamps + coerces
+    stored = _server._write_alert_config({"enabled": True, "threshold": "500", "ratio": 2.0})
+    assert stored["enabled"] is True
+    assert stored["threshold"] == 500.0
+    assert stored["ratio"] == 1.0  # clamped to <=1.0
+    assert _server._read_alert_config()["threshold"] == 500.0
+    # ratio floor: a tiny positive ratio clamps up to 0.01
+    assert _server._write_alert_config({"ratio": 0.005})["ratio"] == 0.01
+    # 0.0 is falsy -> treated as unset -> default 0.8
+    assert _server._write_alert_config({"ratio": 0.0})["ratio"] == 0.8
+
+
+def test_today_credits_sums_only_today(tmp_path, monkeypatch) -> None:
+    from datetime import datetime, timedelta, timezone
+
+    tz = timezone(timedelta(hours=8))
+    now = datetime.now(tz)
+    today = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    yesterday = today - timedelta(days=1)
+    rows = [
+        _row(today.isoformat(), 2.0),
+        _row(today.isoformat(), 1.5),
+        _row(yesterday.isoformat(), 9.0),
+    ]
+    monkeypatch.setattr(_server, "_load_rows", lambda: rows)
+    out = _server._today_credits(480)  # +08:00
+    assert out["credits"] == 3.5
+    assert out["turns"] == 2
+
+
 def test_normalize_slot_strips_prefixes() -> None:
     assert _server._normalize_slot("dashboard:chat-12-999") == "chat-12-999"
     assert _server._normalize_slot("dashboard_chat-12-999") == "chat-12-999"

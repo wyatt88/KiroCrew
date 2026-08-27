@@ -4221,7 +4221,15 @@
     "daysChoice": "{{n}} दिन",
     "noData": "अभी तक कोई उपयोग दर्ज नहीं।",
     "loadError": "उपयोग लोड नहीं हो सका।",
-    "refresh": "रिफ्रेश"
+    "refresh": "रिफ्रेश",
+    "alertTitle": "दैनिक खपत अलर्ट",
+    "alertEnable": "सक्षम करें",
+    "alertThreshold": "सीमा (क्रेडिट)",
+    "alertRatio": "इस पर सूचित करें",
+    "alertSave": "सहेजें",
+    "alertTodayVsTrigger": "आज {{today}} / ट्रिगर {{trigger}}",
+    "alertOver": "पार",
+    "alertHint": "एक बैकग्राउंड जॉब हर घंटे जांचता है और आज के क्रेडिट ट्रिगर पार करते ही डैशबोर्ड सूचना भेजता है।"
   },
   "components": {
     "kiroAccountModal": {

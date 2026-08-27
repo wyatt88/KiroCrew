@@ -1,11 +1,31 @@
 import { API_BASE } from './constants'
-import type { HealthResponse, RecentResponse, SummaryResponse } from './types'
+import type {
+  AlertConfig,
+  HealthResponse,
+  RecentResponse,
+  SummaryResponse,
+  TodayResponse,
+} from './types'
 
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path, { credentials: 'same-origin' })
   if (!r.ok) {
     const body = await r.text().catch(() => '')
     throw new Error(body || `HTTP ${r.status}`)
+  }
+  return r.json() as Promise<T>
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) {
+    const t = await r.text().catch(() => '')
+    throw new Error(t || `HTTP ${r.status}`)
   }
   return r.json() as Promise<T>
 }
@@ -28,4 +48,11 @@ export const creditUsageApi = {
 
   recent: (limit: number) =>
     get<RecentResponse>(`${API_BASE}/recent?limit=${encodeURIComponent(String(limit))}`),
+
+  today: () =>
+    get<TodayResponse>(`${API_BASE}/today?tz=${encodeURIComponent(String(tzOffsetMinutes()))}`),
+
+  getAlertConfig: () => get<AlertConfig>(`${API_BASE}/alert-config`),
+
+  saveAlertConfig: (cfg: AlertConfig) => post<AlertConfig>(`${API_BASE}/alert-config`, cfg),
 }

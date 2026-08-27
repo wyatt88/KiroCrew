@@ -4511,6 +4511,14 @@
     "daysChoice": "{{n}}d",
     "noData": "No usage recorded yet.",
     "loadError": "Could not load usage.",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "alertTitle": "Daily spend alert",
+    "alertEnable": "Enable",
+    "alertThreshold": "Threshold (credits)",
+    "alertRatio": "Notify at",
+    "alertSave": "Save",
+    "alertTodayVsTrigger": "Today {{today}} / trigger at {{trigger}}",
+    "alertOver": "Over",
+    "alertHint": "A background job checks each hour and sends a dashboard notification once today's credits cross the trigger."
   }
 }
