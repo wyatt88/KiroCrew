@@ -359,7 +359,7 @@ function AlertSettings() {
               })}
             </span>
             <span style={{ color: over ? 'var(--danger, #e11d48)' : 'var(--text-muted, #888)', fontWeight: 600 }}>
-              {over ? i18nT('creditUsage.alertOver') : `${pctOfTrigger}%`}
+              {over ? i18nT('creditUsage.alertOver') : i18nT('creditUsage.alertPctOfTrigger', { pct: pctOfTrigger })}
             </span>
           </div>
           <div

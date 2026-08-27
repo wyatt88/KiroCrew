@@ -4841,7 +4841,8 @@
     "alertSave": "保存",
     "alertTodayVsTrigger": "本日 {{today}} / 発火 {{trigger}}",
     "alertOver": "超過",
-    "alertHint": "バックグラウンドジョブが毎時チェックし、本日のクレジットが発火点を超えるとダッシュボード通知を送ります。"
+    "alertHint": "バックグラウンドジョブが毎時チェックし、本日のクレジットが発火点を超えるとダッシュボード通知を送ります。",
+    "alertPctOfTrigger": "発火点の {{pct}}%"
   },
   "components": {
     "crewWakeSection": {
