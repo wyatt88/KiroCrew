@@ -555,7 +555,11 @@ export default function CreditUsagePage() {
       {/* Trend */}
       <Card>
         <CardTitle>{i18nT('creditUsage.trendTitle')}</CardTitle>
-        <TrendChart data={s?.trend ?? []} />
+        {/* Fixed-height viewport: if the chart is taller than this, scroll it
+            vertically inside the card instead of growing the card / page. */}
+        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+          <TrendChart data={s?.trend ?? []} />
+        </div>
       </Card>
 
       {/* Breakdowns */}
