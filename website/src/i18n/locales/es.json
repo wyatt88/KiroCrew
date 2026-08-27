@@ -4285,7 +4285,15 @@
     "daysChoice": "{{n}} d",
     "noData": "Aún no hay uso registrado.",
     "loadError": "No se pudo cargar el uso.",
-    "refresh": "Actualizar"
+    "refresh": "Actualizar",
+    "alertTitle": "Alerta de gasto diario",
+    "alertEnable": "Activar",
+    "alertThreshold": "Umbral (créditos)",
+    "alertRatio": "Notificar al",
+    "alertSave": "Guardar",
+    "alertTodayVsTrigger": "Hoy {{today}} / activa a {{trigger}}",
+    "alertOver": "Superado",
+    "alertHint": "Una tarea en segundo plano revisa cada hora y envía una notificación cuando los créditos de hoy superan el umbral."
   },
   "components": {
     "kiroAccountModal": {
