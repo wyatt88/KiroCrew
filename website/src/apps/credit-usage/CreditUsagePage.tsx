@@ -270,7 +270,12 @@ function AlertSettings() {
   }, [cfgQ.data, dirty])
 
   const save = useMutation({
-    mutationFn: (cfg: AlertConfig) => creditUsageApi.saveAlertConfig(cfg),
+    mutationFn: async (cfg: AlertConfig) => {
+      await creditUsageApi.saveAlertConfig(cfg)
+      // Enable creates/refreshes the hourly Schedule job; disable removes it.
+      await creditUsageApi.setAlertSchedule(cfg.enabled)
+      return cfg
+    },
     onSuccess: () => {
       setDirty(false)
       void qc.invalidateQueries({ queryKey: ['credit-usage', 'alert-config'] })

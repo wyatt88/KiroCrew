@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -295,6 +296,97 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "schedule, every, or cron required"}, status=400)
     state.push_refresh("crons")
     return web.json_response({"ok": True, "id": job.id})
+
+
+# Fixed name for the credit-usage daily-spend alert Schedule job. The route
+# below is idempotent on this name: it removes any existing job(s) named this
+# before (re)creating one, so repeated Saves never accumulate duplicates.
+_CREDIT_ALERT_JOB_NAME = "credit-usage-alert"
+
+
+def _install_credit_alert_script() -> str:
+    """Copy the packaged alert checker into ``<config_dir>/crons/`` and return
+    the ``file.py:func`` script spec.
+
+    Cron scripts must live under ``<config_dir>/crons/`` (see
+    ``cron_script.resolve_script_path``), but that directory is runtime state,
+    not git — so the canonical source ships inside the credit_usage package and
+    is copied out here. Idempotent: the copy is refreshed on every enable so a
+    package upgrade propagates the latest checker.
+    """
+    from kiro_crew.apps.builtins.credit_usage import alert_cron as _pkg_script
+
+    src = Path(_pkg_script.__file__)
+    dest_dir = (config_dir() / "crons").resolve()
+    dest_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    dest = dest_dir / "credit_usage_alert.py"
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return f"{dest}:run"
+
+
+async def api_credit_usage_alert_schedule(request: web.Request) -> web.Response:
+    """POST /api/apps/credit-usage/alert-schedule — enable/disable the alert job.
+
+    Body: ``{"enabled": bool}``. The Credit Usage dashboard calls this right
+    after it persists the alert config: on enable it (re)installs the packaged
+    checker script and registers an hourly Schedule job; on disable it removes
+    the job. The job is a code-cron (``minimal_context`` + ``hide_in_chat`` +
+    ephemeral, silent) so it never spends LLM tokens or clutters the chat list.
+
+    Runs in the gateway process, so it can drive ``state.crons`` directly — the
+    app backend is a separate on-demand process with no gateway credential and
+    cannot manage Schedule jobs itself.
+    """
+    state: DashboardState = request.app["state"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+    enabled = bool(body.get("enabled", False))
+
+    # Idempotent teardown: remove any existing alert job(s) first, so a re-save
+    # (enabled or disabled) never leaves a duplicate or a stale schedule behind.
+    try:
+        existing = await state.crons.list_jobs_async(include_disabled=True)
+        removed_ids = [j.id for j in existing if j.name == _CREDIT_ALERT_JOB_NAME]
+        for jid in removed_ids:
+            await state.crons.remove_job_async(jid)
+            await state.crons.get_history().delete_job_history(jid)
+    except CronStoreBusy:
+        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+
+    if not enabled:
+        if removed_ids:
+            state.push_refresh("crons")
+        return web.json_response({"ok": True, "enabled": False, "removed": len(removed_ids)})
+
+    # Enable: install the checker script and register a fresh hourly job.
+    try:
+        script_spec = _install_credit_alert_script()
+    except OSError as exc:
+        safe, _ = redact_credentials(redact_exfiltration_urls(str(exc))[0])
+        return web.json_response(
+            {"error": f"could not install alert script: {safe}"}, status=500
+        )
+    try:
+        job = await state.crons.add_job_async(
+            _CREDIT_ALERT_JOB_NAME,
+            # message is passed to the script as ctx.message; the checker reads
+            # its config from disk, so the body is only a human-readable label.
+            "Check today's credit spend against the daily alert threshold.",
+            cron_expr="0 * * * *",  # hourly, on the hour
+            script=script_spec,
+            minimal_context=True,
+            hide_in_chat=True,
+            persistent_session=False,
+            silent=True,
+        )
+    except CronStoreBusy:
+        return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    state.push_refresh("crons")
+    return web.json_response({"ok": True, "enabled": True, "id": job.id})
 
 
 async def api_cron_delete(request: web.Request) -> web.Response:

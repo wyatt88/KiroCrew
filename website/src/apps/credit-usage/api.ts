@@ -55,4 +55,14 @@ export const creditUsageApi = {
   getAlertConfig: () => get<AlertConfig>(`${API_BASE}/alert-config`),
 
   saveAlertConfig: (cfg: AlertConfig) => post<AlertConfig>(`${API_BASE}/alert-config`, cfg),
+
+  // Drive the background Schedule (cron) job: on enable the gateway installs
+  // the checker script and registers an hourly job; on disable it removes it.
+  // This is a GATEWAY route (not the app-proxy base) because only the gateway
+  // process can manage Schedule jobs.
+  setAlertSchedule: (enabled: boolean) =>
+    post<{ ok: boolean; enabled: boolean; id?: string; removed?: number }>(
+      '/api/apps/credit-usage/alert-schedule',
+      { enabled },
+    ),
 }
