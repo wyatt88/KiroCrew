@@ -4293,7 +4293,7 @@
     "alertSave": "Guardar",
     "alertTodayVsTrigger": "Hoy {{today}} / activa a {{trigger}}",
     "alertOver": "Superado",
-    "alertHint": "Una tarea en segundo plano revisa cada hora y envía una notificación cuando los créditos de hoy superan el umbral.",
+    "alertHint": "Una tarea en segundo plano revisa cada 2 minutos y envía una notificación cuando los créditos de hoy superan el umbral.",
     "alertPctOfTrigger": "{{pct}}% del umbral"
   },
   "components": {

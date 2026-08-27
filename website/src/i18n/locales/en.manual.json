@@ -4519,7 +4519,7 @@
     "alertSave": "Save",
     "alertTodayVsTrigger": "Today {{today}} / trigger at {{trigger}}",
     "alertOver": "Over",
-    "alertHint": "A background job checks each hour and sends a dashboard notification once today's credits cross the trigger.",
+    "alertHint": "A background job checks every 2 minutes and sends a dashboard notification once today's credits cross the trigger.",
     "alertPctOfTrigger": "{{pct}}% of trigger"
   }
 }
