@@ -4229,7 +4229,7 @@
     "alertSave": "Speichern",
     "alertTodayVsTrigger": "Heute {{today}} / Auslöser {{trigger}}",
     "alertOver": "Überschritten",
-    "alertHint": "Ein Hintergrundjob prüft stündlich und sendet eine Dashboard-Benachrichtigung, sobald die heutigen Credits den Auslöser überschreiten.",
+    "alertHint": "Ein Hintergrundjob prüft alle 2 Minuten und sendet eine Dashboard-Benachrichtigung, sobald die heutigen Credits den Auslöser überschreiten.",
     "alertPctOfTrigger": "{{pct}}% des Auslösers"
   },
   "components": {
