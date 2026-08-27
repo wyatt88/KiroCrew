@@ -71,83 +71,107 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
   if (!data.length) return null
   const max = Math.max(1, ...data.map((d) => d.credits))
   const H = 160
-  const AX = 46 // left gutter for the Y axis
-  const pad = 6
-  // Fixed width per day so wide windows (60d/90d) overflow the card and scroll
-  // horizontally instead of squashing every bar. Small windows still fill width
-  // (the container min-width via the wrapper), but we cap the minimum plot width.
+  const AX = 46 // width of the fixed Y-axis column (does NOT scroll)
+  const XLABEL_H = 24 // space below the plot for date labels
   const BAR_W = 26
-  const plotW = Math.max(data.length * BAR_W, 320)
-  const W = AX + plotW + pad
-  const bw = plotW / data.length
-  // Label at most ~8 ticks so the axis stays readable across window sizes.
+  const bw = BAR_W
+  const plotW = data.length * bw
+  // Label at most ~8 x-ticks so the axis stays readable across window sizes.
   const step = Math.max(1, Math.ceil(data.length / 8))
   // 5 horizontal gridlines / Y ticks: 0, 25%, 50%, 75%, 100% of max.
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, v: max * f, y: H - f * H }))
   return (
-    <div style={{ width: '100%', overflowX: 'auto' }}>
+    <div style={{ display: 'flex', width: '100%', alignItems: 'stretch' }}>
+      {/* Fixed Y axis — pinned, never scrolls */}
       <svg
-        viewBox={`0 0 ${W} ${H + 24}`}
-        width={W}
-        height={H + 24}
-        style={{ display: 'block', maxWidth: 'none' }}
-        role="img"
-        aria-label={i18nT('creditUsage.trendTitle')}
+        width={AX}
+        height={H + XLABEL_H}
+        viewBox={`0 0 ${AX} ${H + XLABEL_H}`}
+        style={{ flex: `0 0 ${AX}px`, display: 'block' }}
+        aria-hidden="true"
       >
-        {/* Y axis: gridlines + tick labels */}
         {yTicks.map((t) => (
-          <g key={t.f}>
-            <line
-              x1={AX}
-              y1={t.y}
-              x2={W - pad}
-              y2={t.y}
-              stroke="var(--border, rgba(127,127,127,0.2))"
-              strokeWidth={1}
-            />
-            <text
-              x={AX - 6}
-              y={t.y + 3}
-              textAnchor="end"
-              fontSize="9"
-              fill="var(--text-muted, #888)"
-            >
-              {fmtCredits(t.v)}
-            </text>
-          </g>
+          <text
+            key={t.f}
+            x={AX - 6}
+            y={t.y + 3}
+            textAnchor="end"
+            fontSize="9"
+            fill="var(--text-muted, #888)"
+          >
+            {fmtCredits(t.v)}
+          </text>
         ))}
-        {data.map((d, i) => {
-          const h = Math.max(d.credits > 0 ? 1 : 0, (d.credits / max) * H)
-          const x = AX + i * bw
-          const y = H - h
-          return (
-            <g key={d.date}>
-              <rect
-                x={x + 1}
-                y={y}
-                width={Math.max(1, bw - 2)}
-                height={h}
-                rx={2}
-                fill="var(--accent, #6366f1)"
-                opacity={d.credits > 0 ? 0.85 : 0.15}
-              >
-                <title>{`${d.date} — ${fmtCredits(d.credits)} credits`}</title>
-              </rect>
-              {i % step === 0 && (
-                <text
-                  x={x + bw / 2}
-                  y={H + 16}
-                  textAnchor="middle"
-                  fontSize="9"
-                  fill="var(--text-muted, #888)"
-                >
-                  {d.date.slice(5)}
-                </text>
-              )}
-            </g>
-          )
-        })}
       </svg>
+      {/* Scrollable plot. Few days → fills the card width (bars widen, no blank
+          gap); many days → overflows and scrolls, Y axis stays pinned. Bars &
+          gridlines live in a preserveAspectRatio=none SVG (rects/lines scale
+          cleanly); the date labels are an aligned HTML row so text never
+          distorts when the plot is stretched to fill. */}
+      <div style={{ flex: 1, minWidth: 0, overflowX: 'auto' }}>
+        <div style={{ minWidth: plotW }}>
+          <svg
+            viewBox={`0 0 ${plotW} ${H}`}
+            height={H}
+            width="100%"
+            preserveAspectRatio="none"
+            style={{ display: 'block' }}
+            role="img"
+            aria-label={i18nT('creditUsage.trendTitle')}
+          >
+            {yTicks.map((t) => (
+              <line
+                key={t.f}
+                x1={0}
+                y1={t.y}
+                x2={plotW}
+                y2={t.y}
+                stroke="var(--border, rgba(127,127,127,0.2))"
+                strokeWidth={1}
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+            {data.map((d, i) => {
+              const h = Math.max(d.credits > 0 ? 1 : 0, (d.credits / max) * H)
+              const x = i * bw
+              const y = H - h
+              return (
+                <rect
+                  key={d.date}
+                  x={x + 1}
+                  y={y}
+                  width={Math.max(1, bw - 2)}
+                  height={h}
+                  rx={2}
+                  fill="var(--accent, #6366f1)"
+                  opacity={d.credits > 0 ? 0.85 : 0.15}
+                >
+                  <title>{`${d.date} — ${fmtCredits(d.credits)} credits`}</title>
+                </rect>
+              )
+            })}
+          </svg>
+          {/* Date labels: one equal-flex cell per day, so they stay aligned
+              with the bars whether the plot is stretched (fill) or scrolled. */}
+          <div style={{ display: 'flex', height: XLABEL_H, alignItems: 'center' }}>
+            {data.map((d, i) => (
+              <div
+                key={d.date}
+                style={{
+                  flex: '1 1 0',
+                  textAlign: 'center',
+                  fontSize: 9,
+                  color: 'var(--text-muted, #888)',
+                  whiteSpace: 'nowrap',
+                  overflow: 'visible',
+                }}
+              >
+                {i % step === 0 ? d.date.slice(5) : ''}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
