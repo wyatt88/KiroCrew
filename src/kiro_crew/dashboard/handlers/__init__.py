@@ -96,6 +96,7 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_mcp_oauth_relay,
 )
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
+    api_credit_usage_alert_schedule,
     api_cron_ack,
     api_cron_batch_delete,
     api_cron_cancel,

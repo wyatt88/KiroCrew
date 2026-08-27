@@ -1242,6 +1242,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
+    app.router.add_post(
+        "/api/apps/credit-usage/alert-schedule",
+        handlers.api_credit_usage_alert_schedule,
+    )
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
     app.router.add_get("/api/crons/history", handlers.api_cron_history_all)
     app.router.add_delete("/api/crons/{job_id}", handlers.api_cron_delete)
