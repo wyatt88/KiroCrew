@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, Phone, PhoneOff } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -352,6 +352,12 @@ interface ChatInputProps {
   onVoiceStart?: () => Promise<void> | void
   /** End capture AND transcribe — the commit half of the hold gesture. */
   onVoiceStop?: () => void
+  /** Hands-free "call mode" is active — the mic auto-re-arms between turns. */
+  callActive?: boolean
+  /** Current call-mode phase, shown as a status label while a call is active. */
+  callState?: 'idle' | 'listening' | 'thinking' | 'speaking'
+  /** Toggle call mode on/off. Undefined when voice input is unsupported. */
+  onCallToggle?: () => void
   /**
    * Is capture in flight AT ALL — ungated by session ownership, unlike
    * `voiceRecording`.
@@ -736,6 +742,9 @@ function ChatInput({
   onVoicePrewarm,
   onVoiceStart,
   onVoiceStop,
+  callActive = false,
+  callState = 'idle',
+  onCallToggle,
   voiceCaptureActive,
   voiceError = null,
   voiceLevel = 0,
@@ -3362,6 +3371,39 @@ function ChatInput({
               >
                 {!micIsModeSwitch && transcribeInFlight ? <Loader2 size={18} className="animate-spin" /> : voiceHoldMode ? <Keyboard size={18} /> : <Mic size={18} />}
               </button>
+            )}
+            {onCallToggle && (
+              <button
+                type="button"
+                className={`w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all border-none ${
+                  callActive ? 'bg-accent-subtle text-accent animate-pulse' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'
+                } disabled:opacity-30`}
+                onClick={onCallToggle}
+                disabled={disabled || optimizing}
+                aria-label={callActive ? i18nT('components.chatInput.call_hang_up') : i18nT('components.chatInput.call_start')}
+                title={callActive
+                  ? i18nT(callState === 'listening'
+                      ? 'components.chatInput.call_listening'
+                      : callState === 'thinking'
+                        ? 'components.chatInput.call_thinking'
+                        : callState === 'speaking'
+                          ? 'components.chatInput.call_speaking'
+                          : 'components.chatInput.call_hang_up')
+                  : i18nT('components.chatInput.call_start')}
+              >
+                {callActive ? <PhoneOff size={18} /> : <Phone size={18} />}
+              </button>
+            )}
+            {callActive && onCallToggle && (
+              <span className="text-xs text-muted whitespace-nowrap" data-testid="call-state-label">
+                {i18nT(callState === 'listening'
+                  ? 'components.chatInput.call_listening'
+                  : callState === 'thinking'
+                    ? 'components.chatInput.call_thinking'
+                    : callState === 'speaking'
+                      ? 'components.chatInput.call_speaking'
+                      : 'components.chatInput.call_hang_up')}
+              </span>
             )}
             {/* The busy branch is reachable with EITHER a stop affordance or a
                 steer path: a host without onStop (the side panel — stopping the

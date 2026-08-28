@@ -163,8 +163,8 @@ def test_title_resolution_from_sessions_dir(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.setattr(_server, "_sessions_dir", lambda: sdir)
-    _server._title_sig = None  # bust the module cache
-    _server._title_map = {}
+    monkeypatch.setattr(_server, "_title_sig", None)  # bust the module cache
+    monkeypatch.setattr(_server, "_title_map", {})
 
     assert _server._title_for_slot("chat-12-999") == "Credit dashboard work"
     assert _server._title_for_slot("dashboard:chat-12-999") == "Credit dashboard work"

@@ -139,6 +139,7 @@ import QueueStack, { SubagentDeliveryProgress, isSystemDelivery, isNonInteractiv
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { TipCard, useTipTrigger } from '../components/TipCard'
 import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../hooks/useVoiceInput'
+import { usePhoneCall, type PhoneCall } from '../hooks/usePhoneCall'
 import { usePushToTalk } from '../hooks/usePushToTalk'
 import VoiceDisabledModal from '../components/VoiceDisabledModal'
 import { ChatFooter, AssistantMessage, UserMessage, PinnedPrompt } from './chat'
@@ -954,6 +955,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // composer's busy/queue affordance so a message sent during a sub-agent run
   // reads as "will queue".
   const composerBusy = useAppSelector(s => selectComposerBusy(s, s.chat.activeSlot))
+  // Subscribed copy of the TTS-playing flag (elsewhere read imperatively via
+  // store.getState()). Call mode's state machine needs to re-render on the
+  // rising/falling edge of playback to drive listening↔speaking transitions.
+  const voicePlaying = useAppSelector(s => s.chat.voicePlaying)
+  // Call mode ("phone call") is instantiated AFTER startVoice/stopVoice (it
+  // needs them), but the dictation onPartial handler above must call its
+  // barge-in hook. Bridge the ordering with a ref kept current in an effect.
+  const phoneCallRef = useRef<PhoneCall | null>(null)
   const slotStopping = useAppSelector(s => s.chat.slotStopping)
   const slotLoading = useAppSelector(s => s.chat.slotLoading)
   // While a session-switch history fetch is still in flight for the active
@@ -2086,6 +2095,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       streaming: sttStreaming,
       sessionId: activeSlot,
       onPartial: useCallback((text: string, sessionId: string | null) => {
+        // Call mode barge-in: a partial means the user is speaking. If that
+        // happens while the assistant reply is still playing, cut the playback
+        // so the loop falls back to listening. No-op when call mode is inactive.
+        phoneCallRef.current?.onUserSpeechDuringPlayback()
         // Streaming partials only fire while the originating slot is on screen
         // (switching slots stops the stream), so a partial attributed to any
         // other slot is a late straggler — drop it rather than smear a
@@ -2337,6 +2350,52 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // needed here because the split into startVoice/stopVoice left this list
     // genuinely exhaustive.
   }, [voice.recording, startVoice, stopVoice])
+
+  // ── Call mode ("hands-free phone call") ──
+  // Config lives in localStorage (key 'mc-call-mode-config'): the server-side
+  // voice config object is owned by a dataclass shared with the Slack path, so
+  // adding call-only knobs there would reach beyond this feature's surface.
+  // VoicePanel writes the same key and dispatches 'call-mode-config-changed';
+  // we re-read on that event so a settings change applies without a reload.
+  const readCallConfig = useCallback((): { silenceTimeoutSecs: number; chime: boolean } => {
+    try {
+      const raw = localStorage.getItem('mc-call-mode-config')
+      if (raw) {
+        const parsed = JSON.parse(raw) as { silenceTimeoutSecs?: unknown; chime?: unknown }
+        const secs = Number(parsed.silenceTimeoutSecs)
+        return {
+          silenceTimeoutSecs: Number.isFinite(secs) && secs >= 0 ? secs : 15,
+          chime: parsed.chime !== false,
+        }
+      }
+    } catch { /* fall through to defaults */ }
+    return { silenceTimeoutSecs: 15, chime: true }
+  }, [])
+  const [callConfig, setCallConfig] = useState(readCallConfig)
+  useEffect(() => {
+    const onChange = () => setCallConfig(readCallConfig())
+    window.addEventListener('call-mode-config-changed', onChange)
+    window.addEventListener('storage', onChange)
+    return () => {
+      window.removeEventListener('call-mode-config-changed', onChange)
+      window.removeEventListener('storage', onChange)
+    }
+  }, [readCallConfig])
+
+  const phoneCall = usePhoneCall({
+    startVoice,
+    stopVoice,
+    recording: voice.recording,
+    transcribing: voice.transcribing,
+    voicePlaying,
+    assistantBusy: composerBusy,
+    available: sttConfigLoaded && sttEnabled && sttAvailable,
+    silenceTimeoutSecs: callConfig.silenceTimeoutSecs,
+    chime: callConfig.chime,
+  })
+  // Keep the ref current so the dictation onPartial handler (defined above)
+  // reaches the live instance for barge-in.
+  useEffect(() => { phoneCallRef.current = phoneCall }, [phoneCall])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
   // pending audio (the hook's onstop skips transcription), so nothing lands in
   // the composer. Streaming additionally disarms the draining final AND removes
@@ -7636,6 +7695,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               onVoiceStart={voiceInputSupported ? startVoice : undefined}
               onVoiceStop={voiceInputSupported ? stopVoice : undefined}
+              callActive={phoneCall.active}
+              callState={phoneCall.state}
+              onCallToggle={voiceInputSupported ? phoneCall.toggle : undefined}
               voiceCaptureActive={voice.recording}
               agentName={currentSlot?.agent || 'default'}
               agentSource={installedAgents.find(a => a.name === (currentSlot?.agent || 'default'))?.source}

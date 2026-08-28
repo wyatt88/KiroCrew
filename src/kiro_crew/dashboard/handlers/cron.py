@@ -398,7 +398,9 @@ async def api_credit_usage_alert_schedule(request: web.Request) -> web.Response:
         existing = await state.crons.list_jobs_async(include_disabled=True)
         removed_ids = [j.id for j in existing if j.name == _CREDIT_ALERT_JOB_NAME]
         for jid in removed_ids:
-            await state.crons.remove_job_async(jid)
+            await state.crons.remove_job_async(
+                jid, actor="dashboard", source="api_credit_usage_alert_schedule"
+            )
             await state.crons.get_history().delete_job_history(jid)
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
