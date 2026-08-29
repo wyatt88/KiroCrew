@@ -302,7 +302,10 @@ export function useWebSocket() {
     // Mark the whole message consumed even when its tail is below the speech
     // floor, so a later completion event cannot reconsider or repeat it.
     progress.spokenLen = message.content.length
-    if (remaining.length >= 10) enqueueVoiceSynthesis(slot, remaining)
+    // This is the tail: whatever remains after the last streamed clause. Speak
+    // any non-trivial remainder so a short final clause is not dropped (the
+    // streaming path already spoke the earlier clauses).
+    if (remaining.length >= 1) enqueueVoiceSynthesis(slot, remaining)
   }, [enqueueVoiceSynthesis, voiceProgressFor])
 
   const playNextVoiceChunk = useCallback(() => {
@@ -563,14 +566,22 @@ export function useWebSocket() {
         if (!progress) return
         const full = streaming.content
         let lastBound = -1
-        const re = /[.!?](?:\s|$)/g
+        // Speak per CLAUSE as the reply streams, for low latency. Break on both
+        // sentence-final and clause-level punctuation, English AND CJK. English
+        // marks still require a trailing space/end (so "3.14" or "e.g." mid-word
+        // doesn't split); CJK marks are full-width and self-delimiting, so they
+        // break immediately — Chinese text has no spaces to key off.
+        const re = /[.!?,;](?:\s|$)|[。！？；，、]/g
         let match
         while ((match = re.exec(full)) !== null) {
-          if (match.index + 1 > progress.spokenLen) lastBound = match.index + 1
+          const end = match.index + match[0].length
+          if (end > progress.spokenLen) lastBound = end
         }
         if (lastBound > progress.spokenLen) {
           const newText = full.slice(progress.spokenLen, lastBound).trim()
-          if (newText.length >= 10) {
+          // A short floor still avoids synthesizing a lone "." or a 1-2 char
+          // fragment, but low enough that a short clause speaks right away.
+          if (newText.length >= 4) {
             progress.spokenLen = lastBound
             enqueueVoiceSynthesis(activeSlot, newText)
           }

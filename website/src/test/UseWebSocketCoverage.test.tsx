@@ -1105,14 +1105,14 @@ describe('useWebSocket frame router', () => {
     await act(async () => { await Promise.resolve() })
     act(() => {
       globalStore.dispatch(sseChatMessage({
-        slot: ACTIVE, role: 'chunk', content: 'Short. and then an unterminated tail', batched: true,
+        slot: ACTIVE, role: 'chunk', content: 'Hi. and then an unterminated tail', batched: true,
       }))
     })
     await act(async () => {
       ws.simulateMessage({ type: 'chat_chunk', data: { slot: ACTIVE, content: 'x', seq: 1 } })
     })
     await act(async () => { rafCbs[0](0) })
-    // "Short." is under the 10-character floor and the tail has no boundary.
+    // "Hi." is under the 4-character clause floor and the tail has no boundary.
     expect(api.voiceSynthesize).not.toHaveBeenCalled()
   })
 
