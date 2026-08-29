@@ -2357,11 +2357,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // adding call-only knobs there would reach beyond this feature's surface.
   // VoicePanel writes the same key and dispatches 'call-mode-config-changed';
   // we re-read on that event so a settings change applies without a reload.
-  const readCallConfig = useCallback((): { submitSilenceMs: number; silenceTimeoutSecs: number; chime: boolean } => {
+  const readCallConfig = useCallback((): { submitSilenceMs: number; silenceTimeoutSecs: number; chime: boolean; forceVoiceReply: boolean } => {
     try {
       const raw = localStorage.getItem('mc-call-mode-config')
       if (raw) {
-        const parsed = JSON.parse(raw) as { submitSilenceMs?: unknown; silenceTimeoutSecs?: unknown; chime?: unknown }
+        const parsed = JSON.parse(raw) as { submitSilenceMs?: unknown; silenceTimeoutSecs?: unknown; chime?: unknown; forceVoiceReply?: unknown }
         const ms = Number(parsed.submitSilenceMs)
         const secs = Number(parsed.silenceTimeoutSecs)
         return {
@@ -2369,10 +2369,11 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           submitSilenceMs: Number.isFinite(ms) && ms >= 500 && ms <= 10000 ? ms : 2000,
           silenceTimeoutSecs: Number.isFinite(secs) && secs >= 0 ? secs : 15,
           chime: parsed.chime !== false,
+          forceVoiceReply: parsed.forceVoiceReply !== false,
         }
       }
     } catch { /* fall through to defaults */ }
-    return { submitSilenceMs: 2000, silenceTimeoutSecs: 15, chime: true }
+    return { submitSilenceMs: 2000, silenceTimeoutSecs: 15, chime: true, forceVoiceReply: true }
   }, [])
   const [callConfig, setCallConfig] = useState(readCallConfig)
   useEffect(() => {
@@ -2402,6 +2403,32 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Keep the ref current so the dictation onPartial handler (defined above)
   // reaches the live instance for barge-in.
   useEffect(() => { phoneCallRef.current = phoneCall }, [phoneCall])
+  // The slot that started the current call. Call mode is a whole-app singleton
+  // (one ChatInput, swapped by activeSlot), so without this the call UI would
+  // show on every slot the user switches to. Capture the owner on start, clear
+  // on end; the activeSlot-change effect below hangs up when the user leaves it.
+  const callOwnerRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (phoneCall.active && callOwnerRef.current === null) callOwnerRef.current = activeSlot
+    if (!phoneCall.active) callOwnerRef.current = null
+  }, [phoneCall.active, activeSlot])
+  // True only when the on-screen slot is the one that started the call. Mirrors
+  // the voiceOwned pattern so the call UI/state is scoped to its own session.
+  const callOwned = phoneCall.active && callOwnerRef.current === activeSlot
+  // Voice replies are the point of call mode, so force auto-speak ON while a
+  // call is active and restore the user's real setting when it ends. Reuses the
+  // existing `voice-config-changed` seam that useWebSocket listens on to set
+  // autoSpeakRef; auto-speak already targets only the on-screen slot, so with
+  // owner-scoping this speaks replies for the call's own session only.
+  useEffect(() => {
+    if (!phoneCall.active || !callConfig.forceVoiceReply) return
+    window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: true } }))
+    return () => {
+      api.voiceConfig()
+        .then(c => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: !!c.autoSpeak } })))
+        .catch(() => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: false } })))
+    }
+  }, [phoneCall.active, callConfig.forceVoiceReply])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
   // pending audio (the hook's onstop skips transcription), so nothing lands in
   // the composer. Streaming additionally disarms the draining final AND removes
@@ -2512,6 +2539,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // is opt-in and off by default.)
     if (streamEnabledRef.current) sttDisarmedRef.current = true
     if (voiceRef.current.recording) voiceRef.current.toggle()
+    // Leaving the slot that owns the active call ends the call — it is bound to
+    // its originating session, not carried to whatever slot the user opens next.
+    if (callOwnerRef.current && callOwnerRef.current !== activeSlot) {
+      phoneCallRef.current?.hangUp()
+      callOwnerRef.current = null
+    }
   }, [activeSlot])
   // True when the current voice session (owned by the slot where recording
   // actually started — see useVoiceInput's sessionOwner) is the slot on screen.
@@ -7701,8 +7734,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
               onVoiceStart={voiceInputSupported ? startVoice : undefined}
               onVoiceStop={voiceInputSupported ? stopVoice : undefined}
-              callActive={phoneCall.active}
-              callState={phoneCall.state}
+              callActive={callOwned}
+              callState={callOwned ? phoneCall.state : 'idle'}
               onCallToggle={voiceInputSupported ? phoneCall.toggle : undefined}
               voiceCaptureActive={voice.recording}
               agentName={currentSlot?.agent || 'default'}

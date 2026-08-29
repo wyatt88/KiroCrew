@@ -82,21 +82,22 @@ export function VoicePanel() {
   // shared with the Slack reply path; these are dashboard-only call knobs.
   // ChatPage reads the same key and re-reads on 'call-mode-config-changed'.
   const CALL_CONFIG_KEY = 'mc-call-mode-config'
-  const readCall = (): { silenceTimeoutSecs: number; chime: boolean } => {
+  const readCall = (): { silenceTimeoutSecs: number; chime: boolean; forceVoiceReply: boolean } => {
     try {
       const raw = localStorage.getItem(CALL_CONFIG_KEY)
       if (raw) {
-        const p = JSON.parse(raw) as { silenceTimeoutSecs?: unknown; chime?: unknown }
+        const p = JSON.parse(raw) as { silenceTimeoutSecs?: unknown; chime?: unknown; forceVoiceReply?: unknown }
         const secs = Number(p.silenceTimeoutSecs)
-        return { silenceTimeoutSecs: Number.isFinite(secs) && secs >= 0 ? secs : 15, chime: p.chime !== false }
+        return { silenceTimeoutSecs: Number.isFinite(secs) && secs >= 0 ? secs : 15, chime: p.chime !== false, forceVoiceReply: p.forceVoiceReply !== false }
       }
     } catch { /* defaults */ }
-    return { silenceTimeoutSecs: 15, chime: true }
+    return { silenceTimeoutSecs: 15, chime: true, forceVoiceReply: true }
   }
   const [callSilence, setCallSilence] = useState(() => String(readCall().silenceTimeoutSecs))
   const [callChime, setCallChime] = useState(() => readCall().chime)
-  const persistCall = (silenceTimeoutSecs: number, chime: boolean) => {
-    try { localStorage.setItem(CALL_CONFIG_KEY, JSON.stringify({ silenceTimeoutSecs, chime })) } catch { /* ignore */ }
+  const [callForceVoice, setCallForceVoice] = useState(() => readCall().forceVoiceReply)
+  const persistCall = (silenceTimeoutSecs: number, chime: boolean, forceVoiceReply: boolean) => {
+    try { localStorage.setItem(CALL_CONFIG_KEY, JSON.stringify({ silenceTimeoutSecs, chime, forceVoiceReply })) } catch { /* ignore */ }
     window.dispatchEvent(new CustomEvent('call-mode-config-changed'))
   }
 
@@ -195,6 +196,12 @@ export function VoicePanel() {
       <SettingsSection title={i18nT('pages.settings.voicePanel.call_mode')}>
         <SettingsCard>
           <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.voicePanel.call_mode_description')}</div>
+          <SettingsToggle
+            label={i18nT('pages.settings.voicePanel.call_force_voice')}
+            description={i18nT('pages.settings.voicePanel.call_force_voice_desc')}
+            checked={callForceVoice}
+            onChange={v => { setCallForceVoice(v); persistCall(Number(callSilence) || 15, callChime, v) }}
+          />
           <SettingsInput
             label={i18nT('pages.settings.voicePanel.call_silence_timeout')}
             description={i18nT('pages.settings.voicePanel.call_silence_timeout_desc')}
@@ -207,14 +214,14 @@ export function VoicePanel() {
               const n = Number(callSilence)
               const secs = Number.isFinite(n) && n >= 0 ? Math.round(n) : 15
               setCallSilence(String(secs))
-              persistCall(secs, callChime)
+              persistCall(secs, callChime, callForceVoice)
             }}
           />
           <SettingsToggle
             label={i18nT('pages.settings.voicePanel.call_chime')}
             description={i18nT('pages.settings.voicePanel.call_chime_desc')}
             checked={callChime}
-            onChange={v => { setCallChime(v); persistCall(Number(callSilence) || 15, v) }}
+            onChange={v => { setCallChime(v); persistCall(Number(callSilence) || 15, v, callForceVoice) }}
           />
         </SettingsCard>
       </SettingsSection>

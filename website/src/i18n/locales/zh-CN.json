@@ -12424,6 +12424,8 @@
         "aws_region_polly": "AWS 区域（Amazon Polly）",
         "call_chime": "重新开启提示音",
         "call_chime_desc": "麦克风重新开启时播放短促提示音，让你知道轮到你说话了。",
+        "call_force_voice": "连续语音对话",
+        "call_force_voice_desc": "打开后，进入通话模式会自动朗读每条回复，整段对话都走语音。关闭则即使在通话模式回复也只显示文字。",
         "call_mode": "通话模式",
         "call_mode_description": "免提语音对话：每次语音回复后麦克风自动重新开启，无需在轮次之间点击任何按钮。在助手说话时开口即可打断它。",
         "call_silence_timeout": "静默超时（秒）",

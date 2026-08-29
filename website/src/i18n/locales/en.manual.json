@@ -4809,6 +4809,8 @@
         "amazon_polly_cloud": "Amazon Polly (cloud)",
         "call_chime": "Re-arm chime",
         "call_chime_desc": "Play a short tone when the microphone re-opens, so you know it is your turn to speak.",
+        "call_force_voice": "Continuous voice conversation",
+        "call_force_voice_desc": "When on, entering Call Mode automatically speaks every reply aloud, so the whole conversation is voice. Turn off to keep replies as text even in Call Mode.",
         "call_mode": "Call Mode",
         "call_mode_description": "Hands-free voice conversation: the microphone re-opens automatically after each spoken reply, so you never touch a button between turns. Speak while the assistant is talking to interrupt it.",
         "call_silence_timeout": "Silence timeout (seconds)",

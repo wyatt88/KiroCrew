@@ -12756,6 +12756,8 @@
         "aws_region_polly": "Regione AWS (Amazon Polly)",
         "call_chime": "Segnale di riattivazione",
         "call_chime_desc": "Riproduce un breve suono quando il microfono si riapre, così sai che tocca a te parlare.",
+        "call_force_voice": "Conversazione vocale continua",
+        "call_force_voice_desc": "Quando attivo, entrando nella modalità Chiamata ogni risposta viene letta ad alta voce, così l'intera conversazione è vocale. Disattiva per mantenere le risposte come testo anche in modalità Chiamata.",
         "call_mode": "Modalità chiamata",
         "call_mode_description": "Conversazione vocale a mani libere: il microfono si riapre automaticamente dopo ogni risposta vocale, senza dover toccare alcun pulsante tra un turno e l’altro. Parla mentre l’assistente parla per interromperlo.",
         "call_silence_timeout": "Timeout di silenzio (secondi)",

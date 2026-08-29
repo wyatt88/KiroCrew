@@ -12590,6 +12590,8 @@
         "aws_region_polly": "AWS-Region (Amazon Polly)",
         "call_chime": "Ton bei erneuter Aktivierung",
         "call_chime_desc": "Spielt einen kurzen Ton ab, wenn sich das Mikrofon wieder öffnet, damit Sie wissen, dass Sie an der Reihe sind.",
+        "call_force_voice": "Kontinuierliches Sprachgespräch",
+        "call_force_voice_desc": "Wenn aktiviert, wird im Anrufmodus jede Antwort automatisch vorgelesen, sodass das gesamte Gespräch per Sprache verläuft. Deaktivieren, um Antworten auch im Anrufmodus als Text zu behalten.",
         "call_mode": "Anrufmodus",
         "call_mode_description": "Freihändige Sprachunterhaltung: Das Mikrofon öffnet sich nach jeder gesprochenen Antwort automatisch wieder, sodass Sie zwischen den Zügen keine Taste drücken müssen. Sprechen Sie, während der Assistent redet, um ihn zu unterbrechen.",
         "call_silence_timeout": "Stille-Timeout (Sekunden)",

@@ -12424,6 +12424,8 @@
         "aws_region_polly": "AWS 리전(Amazon Polly)",
         "call_chime": "재개 알림음",
         "call_chime_desc": "마이크가 다시 열릴 때 짧은 음을 재생하여 말할 차례임을 알려줍니다.",
+        "call_force_voice": "연속 음성 대화",
+        "call_force_voice_desc": "켜면 통화 모드에 들어갈 때 모든 답변을 자동으로 음성으로 읽어 대화 전체가 음성으로 진행됩니다. 끄면 통화 모드에서도 답변이 텍스트로 유지됩니다.",
         "call_mode": "통화 모드",
         "call_mode_description": "핸즈프리 음성 대화: 답변이 음성으로 재생될 때마다 마이크가 자동으로 다시 열려 턴 사이에 버튼을 누를 필요가 없습니다. 어시스턴트가 말하는 중에 말하면 중단시킬 수 있습니다.",
         "call_silence_timeout": "무음 제한 시간(초)",
