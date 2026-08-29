@@ -2415,20 +2415,26 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // True only when the on-screen slot is the one that started the call. Mirrors
   // the voiceOwned pattern so the call UI/state is scoped to its own session.
   const callOwned = phoneCall.active && callOwnerRef.current === activeSlot
-  // Voice replies are the point of call mode, so force auto-speak ON while a
-  // call is active and restore the user's real setting when it ends. Reuses the
-  // existing `voice-config-changed` seam that useWebSocket listens on to set
-  // autoSpeakRef; auto-speak already targets only the on-screen slot, so with
-  // owner-scoping this speaks replies for the call's own session only.
+  // Voice replies are the point of call mode, so force auto-speak ON while the
+  // call is active AND its owning slot is on screen, then restore the user's
+  // real setting the instant that stops being true. Gating on `callOwned` (not
+  // `phoneCall.active`) means force-OFF fires the moment the owner slot leaves
+  // the screen, and restoring SYNCHRONOUSLY from a snapshot taken at call start
+  // (rather than an async api.voiceConfig() re-read) closes the window where the
+  // global autoSpeak flag lingered true and spoke replies in another session.
+  const savedAutoSpeakRef = useRef<boolean | null>(null)
   useEffect(() => {
-    if (!phoneCall.active || !callConfig.forceVoiceReply) return
+    if (!callOwned || !callConfig.forceVoiceReply) return
+    if (savedAutoSpeakRef.current === null) {
+      api.voiceConfig().then(c => { savedAutoSpeakRef.current = !!c.autoSpeak }).catch(() => { savedAutoSpeakRef.current = false })
+    }
     window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: true } }))
     return () => {
-      api.voiceConfig()
-        .then(c => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: !!c.autoSpeak } })))
-        .catch(() => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: false } })))
+      const restore = savedAutoSpeakRef.current ?? false
+      savedAutoSpeakRef.current = null
+      window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: restore } }))
     }
-  }, [phoneCall.active, callConfig.forceVoiceReply])
+  }, [callOwned, callConfig.forceVoiceReply])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
   // pending audio (the hook's onstop skips transcription), so nothing lands in
   // the composer. Streaming additionally disarms the draining final AND removes
