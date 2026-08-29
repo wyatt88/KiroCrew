@@ -55,6 +55,14 @@ export interface PhoneCallOptions {
    */
   submitSilenceMs?: number
   /**
+   * Whether entering the call should force spoken replies. When true, the hook
+   * synchronously turns auto-speak ON at call start (before any reply chunk can
+   * stream), so the first clause is spoken mid-stream rather than only after the
+   * whole reply lands. ChatPage's callOwned effect restores the real setting on
+   * hang-up. Off means the call runs with the user's existing auto-speak.
+   */
+  forceVoiceReply?: boolean
+  /**
    * Seconds of silence with the mic open but NOTHING yet spoken before the call
    * auto-hangs-up. 0 disables. Distinct from submitSilenceMs: this reaps an
    * unattended open mic that never heard speech; that one ends a turn the caller
@@ -201,6 +209,17 @@ export function usePhoneCall(opts: PhoneCallOptions): PhoneCall {
     if (!o.available) return
     setActive(true)
     activeRef.current = true
+    // Turn auto-speak ON synchronously, at the exact moment the call begins —
+    // NOT via a post-paint effect. A fast reply's first chunk can flush before
+    // a React effect runs, and the flush reads autoSpeakRef synchronously; if it
+    // is still false the early clauses are skipped and only the end-of-turn tail
+    // speaks, which reads as "TTS waits for the whole reply". Dispatching here
+    // (the same voice-config-changed seam useWebSocket listens on) guarantees
+    // the flag is true before any chunk lands. ChatPage's callOwned effect owns
+    // the restore-on-hangup.
+    if (o.forceVoiceReply) {
+      try { window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: true } })) } catch { /* no-op */ }
+    }
     armMic()
   }, [armMic])
 

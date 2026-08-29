@@ -2399,6 +2399,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     submitSilenceMs: callConfig.submitSilenceMs,
     silenceTimeoutSecs: callConfig.silenceTimeoutSecs,
     chime: callConfig.chime,
+    forceVoiceReply: callConfig.forceVoiceReply,
   })
   // Keep the ref current so the dictation onPartial handler (defined above)
   // reaches the live instance for barge-in.
