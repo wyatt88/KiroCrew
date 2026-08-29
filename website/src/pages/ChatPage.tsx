@@ -2357,19 +2357,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // adding call-only knobs there would reach beyond this feature's surface.
   // VoicePanel writes the same key and dispatches 'call-mode-config-changed';
   // we re-read on that event so a settings change applies without a reload.
-  const readCallConfig = useCallback((): { silenceTimeoutSecs: number; chime: boolean } => {
+  const readCallConfig = useCallback((): { submitSilenceMs: number; silenceTimeoutSecs: number; chime: boolean } => {
     try {
       const raw = localStorage.getItem('mc-call-mode-config')
       if (raw) {
-        const parsed = JSON.parse(raw) as { silenceTimeoutSecs?: unknown; chime?: unknown }
+        const parsed = JSON.parse(raw) as { submitSilenceMs?: unknown; silenceTimeoutSecs?: unknown; chime?: unknown }
+        const ms = Number(parsed.submitSilenceMs)
         const secs = Number(parsed.silenceTimeoutSecs)
         return {
+          // Post-speech silence that ends a turn. Clamp to a sane 0.5–10s band.
+          submitSilenceMs: Number.isFinite(ms) && ms >= 500 && ms <= 10000 ? ms : 2000,
           silenceTimeoutSecs: Number.isFinite(secs) && secs >= 0 ? secs : 15,
           chime: parsed.chime !== false,
         }
       }
     } catch { /* fall through to defaults */ }
-    return { silenceTimeoutSecs: 15, chime: true }
+    return { submitSilenceMs: 2000, silenceTimeoutSecs: 15, chime: true }
   }, [])
   const [callConfig, setCallConfig] = useState(readCallConfig)
   useEffect(() => {
@@ -2385,11 +2388,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const phoneCall = usePhoneCall({
     startVoice,
     stopVoice,
+    submit: () => sendRef.current?.(),
+    partial: voice.partial,
     recording: voice.recording,
     transcribing: voice.transcribing,
     voicePlaying,
     assistantBusy: composerBusy,
     available: sttConfigLoaded && sttEnabled && sttAvailable,
+    submitSilenceMs: callConfig.submitSilenceMs,
     silenceTimeoutSecs: callConfig.silenceTimeoutSecs,
     chime: callConfig.chime,
   })
