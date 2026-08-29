@@ -99,7 +99,7 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     })
     await act(async () => {})
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
-    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', SENTENCE.trim())
+    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', SENTENCE.trim(), { seq: expect.any(Number) })
 
     // Turn completion: everything streamed was already spoken, so nothing may
     // be synthesized again — slicing from the reset counter would repeat the
@@ -122,7 +122,7 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
-    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', tail)
+    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', tail, { seq: expect.any(Number) })
 
     hook.unmount()
   })
@@ -147,8 +147,8 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(2)
-    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(1, 'slot-1', SENTENCE.trim())
-    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(2, 'slot-1', tail)
+    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(1, 'slot-1', SENTENCE.trim(), { seq: expect.any(Number) })
+    expect(api.voiceSynthesize).toHaveBeenNthCalledWith(2, 'slot-1', tail, { seq: expect.any(Number) })
 
     hook.unmount()
   })
@@ -166,7 +166,7 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
-    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', 'A reply that never streamed at all.')
+    expect(api.voiceSynthesize).toHaveBeenCalledWith('slot-1', 'A reply that never streamed at all.', { seq: expect.any(Number) })
 
     hook.unmount()
   })
@@ -196,7 +196,7 @@ describe('useWebSocket auto-speak after a segment reset', () => {
     await act(async () => {})
 
     expect(api.voiceSynthesize).toHaveBeenCalledTimes(2)
-    expect(api.voiceSynthesize).toHaveBeenLastCalledWith('slot-1', TAIL)
+    expect(api.voiceSynthesize).toHaveBeenLastCalledWith('slot-1', TAIL, { seq: expect.any(Number) })
 
     hook.unmount()
   })

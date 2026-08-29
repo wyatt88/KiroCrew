@@ -2400,6 +2400,15 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     silenceTimeoutSecs: callConfig.silenceTimeoutSecs,
     chime: callConfig.chime,
     forceVoiceReply: callConfig.forceVoiceReply,
+    // OFF counterpart to start()'s synchronous auto-speak ON. Re-reads the
+    // PERSISTED voice config (api.voiceConfig returns config.json's autoSpeak,
+    // never the runtime ref, so it is unpolluted by the call-mode force) and
+    // dispatches it, restoring the user's real setting the instant the call ends.
+    restoreAutoSpeak: () => {
+      api.voiceConfig()
+        .then(c => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: !!c.autoSpeak } })))
+        .catch(() => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: false } })))
+    },
   })
   // Keep the ref current so the dictation onPartial handler (defined above)
   // reaches the live instance for barge-in.
@@ -2417,23 +2426,20 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // the voiceOwned pattern so the call UI/state is scoped to its own session.
   const callOwned = phoneCall.active && callOwnerRef.current === activeSlot
   // Voice replies are the point of call mode, so force auto-speak ON while the
-  // call is active AND its owning slot is on screen, then restore the user's
-  // real setting the instant that stops being true. Gating on `callOwned` (not
-  // `phoneCall.active`) means force-OFF fires the moment the owner slot leaves
-  // the screen, and restoring SYNCHRONOUSLY from a snapshot taken at call start
-  // (rather than an async api.voiceConfig() re-read) closes the window where the
-  // global autoSpeak flag lingered true and spoke replies in another session.
-  const savedAutoSpeakRef = useRef<boolean | null>(null)
+  // call is active AND its owning slot is on screen. The OFF counterpart lives
+  // in two guaranteed-to-run places, BOTH re-reading the PERSISTED voice config
+  // (api.voiceConfig returns config.json's autoSpeak, never the runtime ref, so
+  // it is unpolluted by this force): hangUp() (the 📞 toggle) and this effect's
+  // cleanup (the owner slot left the screen). Re-reading persisted truth on
+  // cleanup — rather than a snapshot that could be null/stale/polluted — is what
+  // guarantees no non-call reply is ever spoken after the call ends.
   useEffect(() => {
     if (!callOwned || !callConfig.forceVoiceReply) return
-    if (savedAutoSpeakRef.current === null) {
-      api.voiceConfig().then(c => { savedAutoSpeakRef.current = !!c.autoSpeak }).catch(() => { savedAutoSpeakRef.current = false })
-    }
     window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: true } }))
     return () => {
-      const restore = savedAutoSpeakRef.current ?? false
-      savedAutoSpeakRef.current = null
-      window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: restore } }))
+      api.voiceConfig()
+        .then(c => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: !!c.autoSpeak } })))
+        .catch(() => window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: false } })))
     }
   }, [callOwned, callConfig.forceVoiceReply])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the

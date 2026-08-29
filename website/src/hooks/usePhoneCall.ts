@@ -63,6 +63,16 @@ export interface PhoneCallOptions {
    */
   forceVoiceReply?: boolean
   /**
+   * Called on hang-up when forceVoiceReply is set: restores auto-speak to the
+   * user's PERSISTED setting. start() turns auto-speak ON synchronously (so the
+   * first clause is spoken mid-stream); this is its guaranteed OFF counterpart,
+   * living on the hangup path itself rather than in a caller-side effect whose
+   * cleanup may not run (owner slot already left screen, forceVoiceReply toggled).
+   * Kept as a callback so the hook stays api-agnostic; ChatPage wires it to a
+   * fresh api.voiceConfig() read (persisted truth, unpolluted by the runtime force).
+   */
+  restoreAutoSpeak?: () => void
+  /**
    * Seconds of silence with the mic open but NOTHING yet spoken before the call
    * auto-hangs-up. 0 disables. Distinct from submitSilenceMs: this reaps an
    * unattended open mic that never heard speech; that one ends a turn the caller
@@ -197,6 +207,11 @@ export function usePhoneCall(opts: PhoneCallOptions): PhoneCall {
     setState('idle')
     if (o.recording) o.stopVoice()
     stopTts()
+    // start() forced auto-speak ON synchronously; this is its guaranteed OFF
+    // counterpart. Restoring here (on the hangup path that ALWAYS runs) instead
+    // of in a caller-side effect cleanup means the user's persisted setting is
+    // always restored — no lingering ON that speaks non-call replies.
+    if (o.forceVoiceReply) o.restoreAutoSpeak?.()
     if (o.chime) playChime('end')
   }, [clearRearm, clearSilence, clearSubmit])
 

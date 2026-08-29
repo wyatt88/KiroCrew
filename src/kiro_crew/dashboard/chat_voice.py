@@ -154,6 +154,10 @@ async def api_voice_synthesize(request: web.Request) -> web.Response:
 
     text = body.get("text", "").strip()
     slot_key = body.get("slot", "")
+    # Monotonic clause seq stamped by the frontend so it can reorder playback:
+    # each clause is a separate POST and the audio returns out-of-band as its
+    # own voice_chunk frame, so arrival order is a race. Echoed on the frame.
+    seq = body.get("seq")
     if not text:
         return web.json_response({"error": "text required"}, status=400)
 
@@ -198,6 +202,7 @@ async def api_voice_synthesize(request: web.Request) -> web.Response:
                 "voice_chunk",
                 {
                     "slot": slot_key,
+                    "seq": seq,
                     "index": idx,
                     "sentence": sentence,
                     "audio": base64.b64encode(mp3_bytes).decode(),

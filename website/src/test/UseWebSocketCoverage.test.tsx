@@ -1096,7 +1096,7 @@ describe('useWebSocket frame router', () => {
     })
     await act(async () => { rafCbs[0](0) })
 
-    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'This sentence is long enough.')
+    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'This sentence is long enough.', { seq: expect.any(Number) })
   })
 
   it('does not re-speak a sentence it already sent, nor a fragment', async () => {
@@ -1127,7 +1127,7 @@ describe('useWebSocket frame router', () => {
     })
 
     await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
-    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'A complete final answer.')
+    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'A complete final answer.', { seq: expect.any(Number) })
   })
 
   it('re-reads the auto-speak preference when the finished turn had it off', async () => {
@@ -1147,7 +1147,7 @@ describe('useWebSocket frame router', () => {
       }))
     })
     await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
-    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'Spoken because the pane turned it on.')
+    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'Spoken because the pane turned it on.', { seq: expect.any(Number) })
 
     // ...and switching it back off silences the next turn.
     ;(api.voiceSynthesize as ReturnType<typeof vi.fn>).mockClear()

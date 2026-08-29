@@ -238,6 +238,15 @@ export function useWebSocket() {
   const voiceProgressRef = useRef<VoiceProgress | null>(null)
   const voiceMutedRef = useRef(false)  // suppress incoming chunks after interrupt
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
+  // Strict spoken-order playback. Each synthesized clause is stamped with a
+  // monotonic seq at enqueue time; audio frames return out-of-band as separate
+  // voice_chunk WS frames whose ARRIVAL order is a race (a shorter clause's
+  // Polly synth can finish first). We buffer arriving chunks by seq and release
+  // them into the play queue only in contiguous seq order, so spoken order ==
+  // streaming text order regardless of which POST returns first.
+  const voiceSeqNextRef = useRef(0)                              // next seq to ASSIGN at enqueue
+  const voiceSeqExpectRef = useRef(0)                            // next seq allowed to PLAY
+  const voicePendingRef = useRef<Map<number, string>>(new Map()) // seq -> objectURL, buffered
   // #1 streaming-chunk coalescing: accumulate per-slot chunk text and flush
   // once per animation frame, so the store updates (and the O(N) displayItems /
   // index-map recomputes each dispatch triggers) happen ~per frame instead of
@@ -272,6 +281,12 @@ export function useWebSocket() {
     }
     voiceQueueRef.current.forEach(u => URL.revokeObjectURL(u))
     voiceQueueRef.current = []
+    // Discard any seq-buffered-but-not-yet-played audio and reset the seq
+    // window, so the next turn's clause 0 is expected fresh.
+    voicePendingRef.current.forEach(u => URL.revokeObjectURL(u))
+    voicePendingRef.current.clear()
+    voiceSeqNextRef.current = 0
+    voiceSeqExpectRef.current = 0
     voicePlayingRef.current = false
     dispatch(setVoicePlaying(false))
   }, [dispatch])
@@ -290,8 +305,9 @@ export function useWebSocket() {
   }, [])
 
   const enqueueVoiceSynthesis = useCallback((slot: string, text: string) => {
+    const seq = voiceSeqNextRef.current++
     synthChainRef.current = synthChainRef.current
-      .then(() => api.voiceSynthesize(slot, text))
+      .then(() => api.voiceSynthesize(slot, text, { seq }))
       .catch(() => {})
   }, [])
 
@@ -1660,14 +1676,30 @@ export function useWebSocket() {
             if (voiceMutedRef.current) break
             if (data.slot !== store.getState().chat.activeSlot) break
             // Queue and play audio chunks as they arrive
-            const { audio: b64, audioMime } = data as { audio: string; audioMime?: string }
+            const { audio: b64, audioMime } = data as { audio: string; audioMime?: string; seq?: number }
             if (b64) {
               try {
                 const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
                 const blob = new Blob([bytes], { type: audioMime === 'audio/wav' ? 'audio/wav' : 'audio/mpeg' })
                 const url = URL.createObjectURL(blob)
-                voiceQueueRef.current.push(url)
                 dispatch(setVoicePlaying(true))
+                const seq = (data as { seq?: number }).seq
+                if (typeof seq === 'number') {
+                  // Buffer by seq; release the contiguous run starting at the
+                  // expected seq into the play queue. A clause that arrives
+                  // early (its Polly synth finished first) waits until every
+                  // earlier clause has arrived, so playback order == text order.
+                  voicePendingRef.current.set(seq, url)
+                  let next: string | undefined
+                  while ((next = voicePendingRef.current.get(voiceSeqExpectRef.current)) !== undefined) {
+                    voicePendingRef.current.delete(voiceSeqExpectRef.current)
+                    voiceSeqExpectRef.current++
+                    voiceQueueRef.current.push(next)
+                  }
+                } else {
+                  // No seq (e.g. a single-chunk path) — preserve arrival order.
+                  voiceQueueRef.current.push(url)
+                }
                 playNextVoiceChunk()
               } catch { /* malformed base64 */ }
             }
