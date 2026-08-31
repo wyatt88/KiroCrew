@@ -7,7 +7,7 @@ export const API_BASE = '/apps/credit-usage/api'
 export const POLL_MS = 5000
 
 export const DEFAULT_WINDOW_DAYS = 30
-export const WINDOW_CHOICES = [7, 14, 30, 60, 90] as const
+export const WINDOW_CHOICES = [7, 14, 30] as const
 
 export const RECENT_LIMIT = 40
 

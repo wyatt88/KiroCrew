@@ -70,23 +70,26 @@ function shortSlot(slot: string): string {
 function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
   if (!data.length) return null
   const max = Math.max(1, ...data.map((d) => d.credits))
-  const H = 160
+  const H = 160 // plot region height
+  const TOP = 10 // headroom so the top tick label isn't clipped by the SVG edge
   const AX = 46 // width of the fixed Y-axis column (does NOT scroll)
   const XLABEL_H = 24 // space below the plot for date labels
   const BAR_W = 26
   const bw = BAR_W
   const plotW = data.length * bw
+  const totalH = TOP + H + XLABEL_H
   // Label at most ~8 x-ticks so the axis stays readable across window sizes.
   const step = Math.max(1, Math.ceil(data.length / 8))
-  // 5 horizontal gridlines / Y ticks: 0, 25%, 50%, 75%, 100% of max.
-  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, v: max * f, y: H - f * H }))
+  // 5 horizontal gridlines / Y ticks: 0, 25%, 50%, 75%, 100% of max. y is offset
+  // by TOP so the plot sits below the headroom band.
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((f) => ({ f, v: max * f, y: TOP + H - f * H }))
   return (
     <div style={{ display: 'flex', width: '100%', alignItems: 'stretch' }}>
       {/* Fixed Y axis — pinned, never scrolls */}
       <svg
         width={AX}
-        height={H + XLABEL_H}
-        viewBox={`0 0 ${AX} ${H + XLABEL_H}`}
+        height={totalH}
+        viewBox={`0 0 ${AX} ${totalH}`}
         style={{ flex: `0 0 ${AX}px`, display: 'block' }}
         aria-hidden="true"
       >
@@ -111,8 +114,8 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
       <div style={{ flex: 1, minWidth: 0, overflowX: 'auto' }}>
         <div style={{ minWidth: plotW }}>
           <svg
-            viewBox={`0 0 ${plotW} ${H}`}
-            height={H}
+            viewBox={`0 0 ${plotW} ${TOP + H}`}
+            height={TOP + H}
             width="100%"
             preserveAspectRatio="none"
             style={{ display: 'block' }}
@@ -134,7 +137,7 @@ function TrendChart({ data }: { data: SummaryResponse['trend'] }) {
             {data.map((d, i) => {
               const h = Math.max(d.credits > 0 ? 1 : 0, (d.credits / max) * H)
               const x = i * bw
-              const y = H - h
+              const y = TOP + H - h
               return (
                 <rect
                   key={d.date}
@@ -470,6 +473,16 @@ export default function CreditUsagePage() {
 
   return (
     <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1100, margin: '0 auto' }}>
+      {/* Layout grids: fixed column counts with orphan-free breakpoints so the
+          arrangement stays uniform across window sizes (no 5+1 KPI orphan, no
+          2+1 breakdown orphan). Media queries can't live in inline styles. */}
+      <style>{`
+        .cu-kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+        @media (max-width: 700px) { .cu-kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 440px) { .cu-kpi-grid { grid-template-columns: 1fr; } }
+        .cu-breakdown-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; align-items: stretch; }
+        @media (max-width: 860px) { .cu-breakdown-grid { grid-template-columns: 1fr; } }
+      `}</style>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <Coins size={22} />
@@ -527,22 +540,18 @@ export default function CreditUsagePage() {
       )}
 
       {/* KPI cards */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-          gap: 12,
-        }}
-      >
-        <StatCard label={i18nT('creditUsage.statToday')} value={fmtCredits(totals?.today)} accent />
-        <StatCard label={i18nT('creditUsage.statWeek')} value={fmtCredits(totals?.thisWeek)} />
-        <StatCard label={i18nT('creditUsage.statMonth')} value={fmtCredits(totals?.thisMonth)} />
+      <div className="cu-kpi-grid">
+        <StatCard className="min-h-[84px]" label={i18nT('creditUsage.statToday')} value={fmtCredits(totals?.today)} accent />
+        <StatCard className="min-h-[84px]" label={i18nT('creditUsage.statWeek')} value={fmtCredits(totals?.thisWeek)} />
+        <StatCard className="min-h-[84px]" label={i18nT('creditUsage.statMonth')} value={fmtCredits(totals?.thisMonth)} />
         <StatCard
+          className="min-h-[84px]"
           label={i18nT('creditUsage.statWindow', { n: days })}
           value={fmtCredits(totals?.windowCredits)}
         />
-        <StatCard label={i18nT('creditUsage.statAllTime')} value={fmtCredits(totals?.allTimeCredits)} />
+        <StatCard className="min-h-[84px]" label={i18nT('creditUsage.statAllTime')} value={fmtCredits(totals?.allTimeCredits)} />
         <StatCard
+          className="min-h-[84px]"
           label={i18nT('creditUsage.statTurns')}
           value={fmtInt(totals?.allTimeTurns)}
           title={i18nT('creditUsage.statTurnsTip')}
@@ -563,22 +572,22 @@ export default function CreditUsagePage() {
       </Card>
 
       {/* Breakdowns */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-        <Card>
+      <div className="cu-breakdown-grid">
+        <Card className="min-h-[220px]">
           <CardTitle>
             <Cpu size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
             {i18nT('creditUsage.byModel')}
           </CardTitle>
           <BreakdownBars rows={s?.byModel ?? []} total={windowTotal} />
         </Card>
-        <Card>
+        <Card className="min-h-[220px]">
           <CardTitle>
             <Layers size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
             {i18nT('creditUsage.bySurface')}
           </CardTitle>
           <BreakdownBars rows={s?.bySurface ?? []} total={windowTotal} />
         </Card>
-        <Card>
+        <Card className="min-h-[220px]">
           <CardTitle>
             <Users size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
             {i18nT('creditUsage.byAgent')}
