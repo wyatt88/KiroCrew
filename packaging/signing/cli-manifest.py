@@ -16,6 +16,8 @@ import hmac
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -61,10 +63,163 @@ class ManifestError(ValueError):
     """A manifest or trust-root contract violation."""
 
 
+#: The system directories the runtime itself trusts by name
+#: (``kiro_crew.platform_compat.trusted_system_bin``): root-owned on every
+#: platform this runs on, and never a package manager's or a user's install
+#: prefix. ``/usr/local/bin`` and ``/opt/homebrew/bin`` are deliberately absent --
+#: a non-root user routinely owns them on macOS -- so a tool there is reached
+#: through PATH and must pass the ownership check like any other PATH entry.
+_TRUSTED_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin")
+
+
+def _windows_admin_roots() -> tuple[str, ...]:
+    """Directories only an administrator writes, read from the OS, not from PATH.
+
+    The system directory comes from ``GetSystemDirectoryW`` and the two Program
+    Files roots from ``HKLM``; neither is settable by a standard user, unlike the
+    ``%SystemRoot%`` / ``%ProgramFiles%`` variables, which the per-user Environment
+    registry key lets any account redirect for its own future processes.
+    """
+    roots: list[str] = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+        written = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))  # type: ignore[attr-defined]
+        if 0 < written < len(buf):
+            roots.append(buf.value)
+    except (AttributeError, OSError, ValueError):  # pragma: no cover - not Windows
+        pass
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion"
+        ) as key:
+            for value in ("ProgramFilesDir", "ProgramFilesDir (x86)"):
+                try:
+                    root, _kind = winreg.QueryValueEx(key, value)
+                except OSError:
+                    continue
+                if isinstance(root, str) and root:
+                    roots.append(root)
+    except (ImportError, OSError):  # pragma: no cover - not Windows
+        pass
+    return tuple(roots)
+
+
+def _under_windows_admin_root(directory: str) -> bool:
+    folded = os.path.normcase(os.path.realpath(directory))
+    for root in _windows_admin_roots():
+        root_folded = os.path.normcase(os.path.realpath(root)).rstrip(os.sep)
+        if folded == root_folded or folded.startswith(root_folded + os.sep):
+            return True
+    return False
+
+
+def _only_owner_writes(path: str, lookup_dir: str | None = None) -> bool:
+    """Whether nobody but root or the caller can change the code *path* runs.
+
+    *path* is already real (symlinks followed). Three things decide what
+    executes, and each is checked: the file's own inode (whoever can write it
+    rewrites the code in place), the directory entry that names the real file
+    (whoever can write that directory swaps the entry for another file), and
+    *lookup_dir*, the real directory the PATH search found the name in when that
+    is a different directory -- its entry is the link the search followed, and
+    whoever can write it points the name at any other file, including a
+    root-owned one that would pass the first two checks while doing something
+    else with the key path it is handed. POSIX checks the file and its directory
+    for a group or other write bit and for an owner who is root or the caller. The
+    lookup directory must be root's or the caller's and closed to the world; a
+    group write bit is tolerated there, as the runtime's provider-binary rule
+    tolerates it: Intel Homebrew's ``/usr/local/bin`` and the GitHub macOS image's
+    are ``user:admin 0775``, and ``admin`` is the host's administrators. Nothing
+    above those directories needs checking: replacing an ancestor plants entries
+    the attacker owns, and the owner test on the entry actually reached refuses
+    those; walking ancestors would instead refuse every tool in a user-namespace
+    sandbox or container, where ``/`` and the home directory are presented under a
+    remapped owner. Windows has no comparable bit, so there each directory must
+    lie under a root only administrators write -- the system directory or a
+    Program Files tree, as the OS reports them -- which is where Git for Windows
+    puts ``openssl.exe`` and the AWS CLI installer puts ``aws.exe``; a copy in a
+    profile, ``AppData`` or a temp directory is refused.
+    """
+    return _owner_only_problem(path, lookup_dir) is None
+
+
+def _owner_only_problem(path: str, lookup_dir: str | None = None) -> str | None:
+    """None when :func:`_only_owner_writes` holds, else the component that fails and why."""
+    directory = os.path.dirname(path)
+    directories = [directory]
+    if lookup_dir is not None and lookup_dir != directory:
+        directories.append(lookup_dir)
+    if os.name == "nt":
+        for entry in directories:
+            if not _under_windows_admin_root(entry):
+                return f"{entry} is not under the system directory or a Program Files root"
+        return None
+    uid = os.getuid()
+    for target in (path, directory):
+        info = os.stat(target)
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or info.st_uid not in (0, uid):
+            return (
+                f"{target} (mode {stat.S_IMODE(info.st_mode):04o}, owner uid {info.st_uid}) "
+                "can be written by another user or is owned by one"
+            )
+    if lookup_dir is not None and lookup_dir != directory:
+        info = os.stat(lookup_dir)
+        if info.st_mode & stat.S_IWOTH or info.st_uid not in (0, uid):
+            return (
+                f"{lookup_dir} (mode {stat.S_IMODE(info.st_mode):04o}, owner uid "
+                f"{info.st_uid}), the PATH directory it was found in, can be written by "
+                "anyone or is owned by another user"
+            )
+    return None
+
+
+def _trusted_tool(name: str) -> str:
+    """The absolute path of *name*, never a bare argv name.
+
+    A publisher's PATH can lead with a directory another local user can write
+    (a shared ``/tmp`` entry, a stale venv, a Homebrew prefix another account
+    installed), and a planted ``openssl`` there would be handed the private-key
+    path, a planted ``aws`` the operator's KMS authority. The runtime's own
+    system directories are tried first and trusted by name, as the runtime
+    trusts them. Anything else comes through PATH, is resolved to its real file,
+    and is accepted only when that file and its directory are writable by nobody
+    but their owner, that owner is root or the operator, and the PATH directory
+    the name was found in is root's or the operator's and closed to the world --
+    so the operator's own Homebrew prefix passes (Intel Homebrew's ``user:admin
+    0775`` ``/usr/local/bin`` included), another user's does not, and neither does
+    a group-writable binary, a link into one, or a link out of a world-writable
+    or another user's directory. On Windows the equivalent test is that both
+    directories lie under the system directory or a Program Files root as the OS
+    reports them.
+    """
+    for directory in _TRUSTED_BIN_DIRS:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    found = shutil.which(name)
+    if found is None:
+        raise ManifestError(f"{name} is required and was not found")
+    resolved = os.path.realpath(found)
+    lookup_dir = os.path.realpath(os.path.dirname(found))
+    problem = _owner_only_problem(resolved, lookup_dir)
+    if problem is not None:
+        raise ManifestError(
+            f"{name} resolves to {resolved} through {lookup_dir}: {problem}; install it "
+            "in a system directory (Program Files on Windows) or fix the owner and "
+            "permissions of that file, its directory and the PATH directory it was found in"
+        )
+    return resolved
+
+
 def _run_openssl(args: list[str]) -> bytes:
     try:
         proc = subprocess.run(
-            ["openssl", *args],
+            [_trusted_tool("openssl"), *args],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -79,7 +234,7 @@ def _run_openssl(args: list[str]) -> bytes:
 def _run_aws_json(args: list[str]) -> dict[str, Any]:
     try:
         proc = subprocess.run(
-            ["aws", *args, "--output", "json", "--no-cli-pager"],
+            [_trusted_tool("aws"), *args, "--output", "json", "--no-cli-pager"],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -122,6 +277,16 @@ def _canonical_json(value: dict[str, str]) -> bytes:
     return (
         json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
     ).encode("ascii")
+
+
+# Shared with the feature-videos publisher (``scripts/feature-videos/_manifest.py``),
+# which loads this file by path and signs a different document with the same key,
+# canonical form, runners and KMS flow. Public names, so the sharing is a stated
+# contract rather than a reach into module internals.
+canonical_json = _canonical_json
+public_key_der = _public_key_der
+run_openssl = _run_openssl
+MAX_SIGNATURE_BYTES = _MAX_SIGNATURE_BYTES
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -359,19 +524,16 @@ def _verify_command(args: argparse.Namespace) -> None:
     print(f"verified: {args.manifest} signed by {expected_key_id}")
 
 
-def _kms_sign_command(args: argparse.Namespace) -> None:
-    payload_any = _load_json(args.payload)
-    payload = _validate_signed_payload(payload_any)
-    canonical = _canonical_json(payload)
-    if args.payload.read_bytes() != canonical:
-        raise ManifestError("CLI manifest payload is not canonical JSON")
+def kms_sign_digest(key_arn: str, pinned_der: bytes, digest: bytes) -> bytes:
+    """Sign a SHA-256 *digest* with the KMS key at *key_arn*, pinned to *pinned_der*.
 
-    pinned_der = _public_key_der(args.public_key)
-    expected_key_id = f"sha256:{hashlib.sha256(pinned_der).hexdigest()}"
-    if payload["key_id"] != expected_key_id:
-        raise ManifestError("CLI manifest payload does not name the committed public key")
-
-    public_response = _run_aws_json(["kms", "get-public-key", "--key-id", args.key_arn])
+    The KMS key's public half must byte-match the committed one before anything
+    is signed: a mistyped ARN would otherwise sign with some other key and
+    produce an envelope every consumer refuses. Shared by the CLI manifest
+    signer and the feature-videos publisher (``scripts/feature-videos``), which
+    sign different documents with the same key and the same checks.
+    """
+    public_response = _run_aws_json(["kms", "get-public-key", "--key-id", key_arn])
     if public_response.get("KeyUsage") != "SIGN_VERIFY":
         raise ManifestError("CLI manifest KMS key must have SIGN_VERIFY usage")
     if public_response.get("KeySpec") not in {"RSA_3072", "RSA_4096"}:
@@ -389,13 +551,12 @@ def _kms_sign_command(args: argparse.Namespace) -> None:
     if not hmac.compare_digest(kms_der, pinned_der):
         raise ManifestError("configured KMS key does not match the committed public key")
 
-    digest = hashlib.sha256(canonical).digest()
     sign_response = _run_aws_json(
         [
             "kms",
             "sign",
             "--key-id",
-            args.key_arn,
+            key_arn,
             "--message",
             base64.b64encode(digest).decode("ascii"),
             "--message-type",
@@ -410,9 +571,24 @@ def _kms_sign_command(args: argparse.Namespace) -> None:
     if not isinstance(encoded_signature, str):
         raise ManifestError("AWS KMS did not return a signature")
     try:
-        signature = base64.b64decode(encoded_signature, validate=True)
+        return base64.b64decode(encoded_signature, validate=True)
     except ValueError as exc:
         raise ManifestError("AWS KMS returned an invalid signature") from exc
+
+
+def _kms_sign_command(args: argparse.Namespace) -> None:
+    payload_any = _load_json(args.payload)
+    payload = _validate_signed_payload(payload_any)
+    canonical = _canonical_json(payload)
+    if args.payload.read_bytes() != canonical:
+        raise ManifestError("CLI manifest payload is not canonical JSON")
+
+    pinned_der = _public_key_der(args.public_key)
+    expected_key_id = f"sha256:{hashlib.sha256(pinned_der).hexdigest()}"
+    if payload["key_id"] != expected_key_id:
+        raise ManifestError("CLI manifest payload does not name the committed public key")
+
+    signature = kms_sign_digest(args.key_arn, pinned_der, hashlib.sha256(canonical).digest())
 
     with tempfile.TemporaryDirectory(prefix="kirocrew-cli-manifest-") as temporary:
         signature_path = Path(temporary) / "signature.bin"
