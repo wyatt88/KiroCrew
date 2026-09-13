@@ -7122,7 +7122,22 @@
       "detach_confirm": "Yes, detach",
       "detach_explain": "This member keeps its agent file, role, triggers, briefing and history, and stops following {{app}}. Detaching cannot be undone; re-linking is a new hire.",
       "detach_failed": "The member could not be detached.",
-      "role_update_member_moved": "This member was edited since this plan was made. Review it again."
+      "role_update_member_moved": "This member was edited since this plan was made. Review it again.",
+      "fire": "Fire {{name}}",
+      "fire_explain": "Firing retires this member: its agent file and roster entry go. Its thread, activity and notes are kept in History unless you say otherwise.",
+      "fire_confirm_explain": "Fire {{name}}? The roster entry, the agent file and the template copy are removed and the private memory is archived. The thread, activity, briefing and rules are archived, not deleted.",
+      "fire_purge_label": "Also delete the thread, activity, briefing and rules. This cannot be undone.",
+      "fire_confirm": "Yes, fire",
+      "fire_confirm_purge": "Yes, fire and delete",
+      "firing": "Firing…",
+      "fire_failed": "The member could not be fired.",
+      "fired_summary": "{{name}} has been fired.",
+      "fired_thread_archived": "Their thread stays in History; their activity and notes are archived.",
+      "fired_thread_purged": "Their thread, activity and notes were deleted.",
+      "fired_thread_kept": "Their activity and notes were deleted, but the thread could not be — it is still in History (a scheduled job may own it).",
+      "fired_thread_none": "They had no thread in History; their activity and notes are archived.",
+      "fired_dismiss": "Dismiss",
+      "fired_thread_none_purged": "They had no thread in History; their activity and notes were deleted."
     },
     "migrationPage": {
       "app_migration": "App Migration",

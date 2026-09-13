@@ -2311,6 +2311,16 @@ export interface RoleUpdatePlan {
   fields: RoleUpdateField[]
 }
 
+/** POST /api/members/{id}/fire. `thread.state`: archived (the transcript stays in
+ *  History), purged (deleted on explicit request), kept (a purge was asked for
+ *  but the history path refused -- a cron owns the transcript, the store could
+ *  not be read), none (the member never opened its thread). */
+export interface FireMemberResult {
+  ok: boolean
+  thread: { history_key: string; state: 'archived' | 'purged' | 'kept' | 'none' }
+  lived_state: 'archived' | 'purged' | 'none'
+}
+
 export interface RoleUpdateResult {
   ok: boolean
   /** The template version the member is on after the apply. */
@@ -2348,6 +2358,8 @@ export interface MemberRosterRow {
    *  drawer's Source row reads "Template <app>/<agent> (v<version>)". */
   template?: string
   template_version?: string
+  /** The default member: cannot be fired (nor deleted from the crew editor). */
+  is_default?: boolean
   /** Stable path-safe slug deriving the member dir and the slot key. */
   slug: string
   /** The pinned DM thread's slot key ('' until first open / unbound). */
@@ -3129,6 +3141,10 @@ export const api = {
    *  `expected_version` is the installed version the plan was made against. */
   applyMemberRoleUpdate: (member: string, body: { resolutions: Record<string, 'mine' | 'theirs'>; expected_version: string; member_fingerprint: string; template_fingerprint: string }) =>
     post('/api/members/' + encodeURIComponent(member) + '/role-update', body).then(j) as Promise<RoleUpdateResult>,
+  /** Retire a member: row, agent file and pristine copy go; memory archived; what
+   *  it lived is archived, or destroyed with `purge`. */
+  fireMember: (member: string, body: { purge: boolean }) =>
+    post('/api/members/' + encodeURIComponent(member) + '/fire', body).then(j) as Promise<FireMemberResult>,
   /** Sever a member from its template: provenance cleared, everything else kept. One-way. */
   detachMember: (member: string) =>
     post('/api/members/' + encodeURIComponent(member) + '/detach', {}).then(j) as Promise<{ ok: boolean }>,

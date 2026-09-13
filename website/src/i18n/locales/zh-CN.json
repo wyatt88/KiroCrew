@@ -14564,7 +14564,22 @@
       "detach_confirm": "是，分离",
       "detach_explain": "此成员将保留其 agent 文件、角色、触发词、简报和历史，并不再跟随 {{app}}。分离无法撤销；重新关联即为一次新的雇用。",
       "detach_failed": "无法分离该成员。",
-      "role_update_member_moved": "自制定此计划以来该成员已被编辑，请重新查看。"
+      "role_update_member_moved": "自制定此计划以来该成员已被编辑，请重新查看。",
+      "fire": "解雇 {{name}}",
+      "fire_explain": "解雇会让此成员退出：其 agent 文件和名单条目会被移除。除非你另有说明，其会话、活动和笔记会保留在历史记录中。",
+      "fire_confirm_explain": "解雇 {{name}}？名单条目、agent 文件和模板副本将被移除，私有记忆将被归档。会话、活动、简报和规则会归档，而不是删除。",
+      "fire_purge_label": "同时删除会话、活动、简报和规则。此操作无法撤销。",
+      "fire_confirm": "是，解雇",
+      "fire_confirm_purge": "是，解雇并删除",
+      "firing": "正在解雇…",
+      "fire_failed": "无法解雇该成员。",
+      "fired_summary": "{{name}} 已被解雇。",
+      "fired_thread_archived": "其会话保留在历史记录中；活动和笔记已归档。",
+      "fired_thread_purged": "其会话、活动和笔记已删除。",
+      "fired_thread_kept": "活动和笔记已删除，但会话无法删除——它仍在历史记录中（可能被某个计划任务持有）。",
+      "fired_thread_none": "历史记录中没有其会话；活动和笔记已归档。",
+      "fired_dismiss": "关闭",
+      "fired_thread_none_purged": "历史记录中没有其会话；活动和笔记已删除。"
     }
   },
   "privacyDisclosure": {

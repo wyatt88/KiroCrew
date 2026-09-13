@@ -14952,7 +14952,22 @@
       "detach_confirm": "Oui, détacher",
       "detach_explain": "Ce membre garde son fichier d’agent, son rôle, ses déclencheurs, son briefing et son historique, et cesse de suivre {{app}}. Le détachement est définitif ; relier est un nouveau recrutement.",
       "detach_failed": "Le membre n’a pas pu être détaché.",
-      "role_update_member_moved": "Ce membre a été modifié depuis ce plan. Examinez-le à nouveau."
+      "role_update_member_moved": "Ce membre a été modifié depuis ce plan. Examinez-le à nouveau.",
+      "fire": "Licencier {{name}}",
+      "fire_explain": "Licencier retire ce membre : son fichier d’agent et son entrée dans la liste disparaissent. Son fil, son activité et ses notes restent dans l’Historique sauf indication contraire.",
+      "fire_confirm_explain": "Licencier {{name}} ? L’entrée de la liste, le fichier d’agent et la copie du modèle sont supprimés et la mémoire privée est archivée. Le fil, l’activité, le briefing et les règles sont archivés, pas supprimés.",
+      "fire_purge_label": "Supprimer aussi le fil, l’activité, le briefing et les règles. Irréversible.",
+      "fire_confirm": "Oui, licencier",
+      "fire_confirm_purge": "Oui, licencier et supprimer",
+      "firing": "Licenciement…",
+      "fire_failed": "Le membre n’a pas pu être licencié.",
+      "fired_summary": "{{name}} a été licencié.",
+      "fired_thread_archived": "Son fil reste dans l’Historique ; son activité et ses notes sont archivées.",
+      "fired_thread_purged": "Son fil, son activité et ses notes ont été supprimés.",
+      "fired_thread_kept": "Son activité et ses notes ont été supprimées, mais pas le fil : il est encore dans l’Historique (une tâche planifiée le détient peut-être).",
+      "fired_thread_none": "Aucun fil dans l’Historique ; son activité et ses notes sont archivées.",
+      "fired_dismiss": "Fermer",
+      "fired_thread_none_purged": "Aucun fil dans l’Historique ; son activité et ses notes ont été supprimées."
     }
   },
   "privacyDisclosure": {

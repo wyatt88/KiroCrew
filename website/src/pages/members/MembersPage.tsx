@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Route, Star, UserPlus, Users, Webhook, X, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
@@ -68,6 +68,7 @@ import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import RoleUpdatePanel from './RoleUpdatePanel'
+import FirePanel, { firedOutcomeText } from './FirePanel'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
@@ -361,6 +362,11 @@ export default function MembersPage() {
   // '' — no thread opened). The remembered-member fallback never sets it —
   // there the user named nobody. Cleared once a different member opens.
   const [gone, setGone] = useState<{ name: string; shown: string } | null>(null)
+  // The outcome of the last fire, shown on the roster until dismissed: the
+  // fired member's drawer disappears with its row, so the sentence that says
+  // where the thread went (archived, purged, or KEPT because the history path
+  // refused) has to live where the user still is.
+  const [firedNotice, setFiredNotice] = useState<string | null>(null)
   // The member the fallback is about to open in place of a gone one a link
   // named. Set right before the fallback's URL write, read (and cleared) by
   // the open that write triggers, so that open can skip the memory write. A
@@ -1555,6 +1561,20 @@ export default function MembersPage() {
             testId="member-star-error"
           />
         </div>
+        {firedNotice && (
+          <div className="flex items-start gap-2 px-4 py-1.5 text-[13px]" role="status" data-testid="member-fired-notice">
+            <span className="min-w-0 flex-1">{firedNotice}</span>
+            <button
+              type="button"
+              className="shrink-0 text-muted hover:text-text"
+              onClick={() => setFiredNotice(null)}
+              aria-label={t('pages.membersPage.fired_dismiss')}
+              data-testid="member-fired-dismiss"
+            >
+              <X className="lucide-inline" size={14} aria-hidden />
+            </button>
+          </div>
+        )}
         {gone && gone.shown === '' && (
           /* Below md a stale link lands on the roster; this is where the
              answer to "where did they go" has to live. Same tone as the
@@ -2608,6 +2628,22 @@ export default function MembersPage() {
             <Pencil size={12} className="lucide-inline" />
             {t('pages.membersPage.edit_in_crew_manager')}
           </button>
+          {/* Fire (design step 5): the reverse of hire, withheld for the default
+              member, which cannot be fired. */}
+          {!active.is_default && (
+            <FirePanel
+              member={active}
+              label={memberLabel(active)}
+              onFired={(result) => {
+                // The row is gone: say where the thread went from the roster,
+                // which is what remains on screen, and leave the URL naming
+                // nobody so the gone-member fallback does not also speak.
+                setFiredNotice(firedOutcomeText(memberLabel(active), result, t))
+                navigate('/members')
+                void queryClient.invalidateQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
+              }}
+            />
+          )}
             </div>
           )
           const leadingTab: SidePanelLeadingTab = {

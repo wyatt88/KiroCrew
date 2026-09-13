@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 
 /* The id / display_name split (design: Crew Member = Custom Agent + Wrapper,
@@ -21,6 +21,7 @@ vi.mock('../../api/client', () => ({
     updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
     listApps: vi.fn(() => Promise.resolve([])),
+    fireMember: vi.fn(),
     memberRoleUpdatePlan: vi.fn(() => Promise.resolve({ member: '', template: '', member_version: '1.2.0', installed_version: '1.2.0', update_available: false, member_fingerprint: 'x', template_fingerprint: 'y', fields: [] })),
   },
 }))
@@ -172,6 +173,33 @@ describe('MembersPage renders identity', () => {
   it('drawer: a member bound to a shared template shows the template itself', async () => {
     await renderPage([MIGRATED, SHIPPED], '?member=case-competition')
     expect(await screen.findByTestId('member-config-template')).toHaveTextContent('case-competition')
+  })
+})
+
+describe('MembersPage fire (design step 5)', () => {
+  it('withholds the verb for the default member and, after a fire, says where the thread went from the roster', async () => {
+    vi.mocked(api.fireMember).mockResolvedValue({
+      ok: true,
+      thread: { history_key: 'dashboard:member-triage', state: 'archived' },
+      lived_state: 'archived',
+    })
+    const dflt = row('default', { is_default: true })
+    await renderPage([MIGRATED, HIRED, dflt], '?member=default')
+    await screen.findByTestId('member-config-id')
+    expect(screen.queryByTestId('member-fire')).toBeNull()
+    // The hired member can be fired.
+    fireEvent.click(screen.getByText('Checkout triage'))
+    await waitFor(() => expect(screen.getByTestId('member-config-id')).toHaveTextContent('triage'))
+    fireEvent.click(screen.getByTestId('member-fire-start'))
+    fireEvent.click(screen.getByTestId('confirm-fire-member'))
+    await waitFor(() => expect(api.fireMember).toHaveBeenCalledWith('triage', { purge: false }))
+    // The row is gone with the drawer; the roster carries the outcome until dismissed.
+    expect(await screen.findByTestId('member-fired-notice')).toHaveTextContent(
+      'Checkout triage has been fired. Their thread stays in History; their activity and notes are archived.',
+    )
+    expect(navigateSpy).toHaveBeenCalledWith('/members')
+    fireEvent.click(screen.getByTestId('member-fired-dismiss'))
+    expect(screen.queryByTestId('member-fired-notice')).toBeNull()
   })
 })
 

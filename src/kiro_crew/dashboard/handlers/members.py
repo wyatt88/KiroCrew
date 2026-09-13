@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 
 from aiohttp import web
@@ -39,6 +40,7 @@ from kiro_crew.config.loader import (
     default_project_dir,
     update_config_locked,
 )
+from kiro_crew.config.paths import data_home
 from kiro_crew.dashboard.chat_persistence import (
     pin_private_agent_store,
     rehydrate_slot_from_history_async,
@@ -47,6 +49,7 @@ from kiro_crew.dashboard.chat_utils import drained, effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.discover import _redact_external
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.member_identity import display_name_too_long, effective_display_name
 from kiro_crew.members import MemberSlugError
 from kiro_crew.memory_stores import UnknownMemoryStore
@@ -242,6 +245,10 @@ async def api_members(request: web.Request) -> web.Response:
                 "source": normalize_member_source(agent_cfg.source),
                 "starred": bool(agent_cfg.starred),
                 "named_by_user": bool(agent_cfg.named_by_user),
+                # The one member the roster cannot fire (and the crew editor
+                # cannot delete): the drawer withholds the verb rather than
+                # offering a 409.
+                "is_default": name == cfg.default_agent,
                 # A crew's IDENTITY: who it is, and the phrasings that should
                 # reach it. Both are operator-authored prose already stored on the
                 # crew, and both are needed off-config — a roster that shows a
@@ -393,6 +400,24 @@ async def api_member_thread(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
 
+    # Serialized against a fire of the same member (``_dm_thread_lock``): a
+    # fire that closes and retires a thread must not race an open that is
+    # binding one, or the open re-creates the slot and the binding the fire
+    # just removed and a same-slug re-hire inherits them.
+    async with _dm_thread_lock:
+        return await _open_member_thread(request, state, slug)
+
+
+#: One lock for every DM-thread binding mutation: the thread open (read the
+#: binding, bind a slot, write it) and the fire (close the slot, remove the
+#: binding). Loop-bound like the config lock. Fire holds it OUTSIDE the config
+#: lock; the open never takes the config lock, so the order cannot invert.
+_dm_thread_lock = LoopBoundLock()
+
+
+async def _open_member_thread(
+    request: web.Request, state: DashboardState, slug: str
+) -> web.Response:
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
 
@@ -1149,7 +1174,7 @@ async def _hire_transaction(
     # made first, then the row is published already bound to it. No moment
     # exists in which a row bound to the shared source can be read.
     created = await _agents_handlers._create_crew(
-        request, create_body, copy_source=agent, admit=_slug_collision_refusal
+        request, create_body, copy_source=agent, admit=_hire_admit
     )
     if created.status != 200:
         return created
@@ -1262,6 +1287,27 @@ def _slugmates(cfg: KiroCrewConfig, candidate: str) -> tuple[str, list[str]]:
     except MemberSlugError:
         return "", []
     return slug, [n for n in _member_names_for_slug(cfg, slug) if n != candidate]
+
+
+def _hire_admit(cfg: KiroCrewConfig, candidate: str) -> web.Response | None:
+    """The create's ``admit`` hook for a hire: the slug must be free of other
+    members, and no interrupted fire of this id may still be pending -- its
+    marker means lived state under this id is still on disk waiting to be
+    archived, and a new member would inherit it (or lose its own files to the
+    resumed cleanup). Fire the id again to finish, then hire."""
+    refused = _slug_collision_refusal(cfg, candidate)
+    if refused is not None:
+        return refused
+    if _read_fire_marker(candidate) is not None:
+        return web.json_response(
+            {
+                "error": f"a fire of {candidate!r} did not finish; fire it again to finish "
+                "before hiring under that id",
+                "code": "fire_pending",
+            },
+            status=409,
+        )
+    return None
 
 
 def _slug_collision_refusal(cfg: KiroCrewConfig, candidate: str) -> web.Response | None:
@@ -1870,3 +1916,357 @@ def _detach_member(member: str, generation: str, template: str) -> web.Response:
         logger.warning("detach %r: the pristine copy could not be removed", member)
     _agents_handlers.clear_list_agents_cache()
     return web.json_response({"ok": True})
+
+
+# ── Fire (design step 5): retire the member, archive what it lived ──
+
+
+async def api_member_fire(request: web.Request) -> web.Response:
+    """POST /api/members/{member}/fire — retire a crew member.
+
+    Body ``{"purge": false}`` (optional). Fire is the reverse of hire: the
+    wrapper row goes, the member's own agent file goes, the pristine copy goes;
+    the private memory store is archived under the ordinary retirement marker
+    (never erased, restorable from the memory admin surface). What the member
+    LIVED -- its DM thread, activity, briefing, rules -- is **archived, not
+    destroyed**: the open thread is closed the way the tab's ✕ closes a chat
+    (its transcript stays in the History tab), and ``members/<slug>/`` moves to
+    ``members/.retired/`` with a ``fired.json`` naming the member, its thread's
+    history key and its template. ``purge: true`` is the explicit request the
+    design reserves for destruction: the lived state is removed instead of
+    archived and the thread's transcript is deleted from history through the
+    same path ``DELETE /api/sessions/{key}`` takes -- and reported as kept
+    when that path refuses (a cron still owns the transcript, the store could
+    not be read), never silently.
+
+    Order: close the thread first (a live session must not keep running
+    against a row that is about to vanish), then row + store under the config
+    lock (the delete route's own mutation; the row must still be the one this
+    request saw), then the copy and pristine copy, then the lived state. The
+    default member cannot be fired (409 ``cannot_fire_default``).
+    """
+    denied = await require_owner_dashboard_request(request, "member.fire")
+    if denied is not None:
+        return denied
+    member = request.match_info["member"]
+    try:
+        body = await request.json() if request.can_read_body else {}
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
+    purge = body.get("purge", False)
+    if not isinstance(purge, bool):
+        return web.json_response(
+            {"error": "purge must be a boolean", "code": "invalid_purge"}, status=400
+        )
+    state: DashboardState = request.app["state"]
+    # Serialized against thread opens (see ``_dm_thread_lock``) for the whole
+    # fire: from the binding read to the retirement, no open can re-bind the
+    # slug under it.
+    async with _dm_thread_lock:
+        return await _fire_member(request, state, member, purge)
+
+
+def _fire_marker_path(member: str) -> Path:
+    """Where a fire records its intent before the row goes: under ``trust/``
+    (agent file tools cannot reach it), keyed by the member id."""
+    if not _AGENT_NAME_RE.match(member):
+        raise MemberSlugError(f"invalid member id {member!r}")
+    root = (data_home() / "trust" / "member-fires").resolve()
+    target = (root / f"{member}.json").resolve()
+    if target.parent != root:
+        raise MemberSlugError(f"member id {member!r} escapes {root}")
+    return target
+
+
+def _write_fire_marker(member: str, intent: dict) -> None:
+    path = _fire_marker_path(member)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(intent, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_fire_marker(member: str) -> dict | None:
+    try:
+        raw = json.loads(_fire_marker_path(member).read_text(encoding="utf-8"))
+    except (OSError, ValueError, MemberSlugError):
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("slug"), str):
+        return None
+    return raw
+
+
+def _clear_fire_marker(member: str) -> None:
+    try:
+        _fire_marker_path(member).unlink(missing_ok=True)
+    except (OSError, MemberSlugError):
+        logger.warning("fire %r: the intent marker could not be removed", member)
+
+
+async def _fire_member(
+    request: web.Request, state: DashboardState, member: str, purge: bool
+) -> web.Response:
+    from kiro_crew.dashboard.chat_handlers import SlotCloseError, close_slot
+    from kiro_crew.dashboard.chat_utils import _history_key_for
+
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    if member not in cfg.agents:
+        # A fire interrupted after the row went (the gateway died, a disk
+        # error) left its intent marker; the retry RESUMES the cleanup instead
+        # of answering 404 for a member whose lived state is still on disk.
+        pending = await asyncio.to_thread(_read_fire_marker, member)
+        if pending is not None:
+            async with _agents_handlers._get_config_lock():
+                return await _finish_fire(request, state, member, pending, purge)
+    row = _member_row(cfg, member)
+    if isinstance(row, web.Response):
+        return row
+    if member == cfg.default_agent:
+        return web.json_response(
+            {
+                "error": "The default member cannot be fired; make another member the default first",
+                "code": "cannot_fire_default",
+            },
+            status=409,
+        )
+    generation = row.memory_store
+    copy_name = row.kiro_agent
+    slug = members_mod.slug_for_name(member)
+    display_name = effective_display_name(member, row.display_name)
+    # The lived state -- ``members/<slug>/``, the rules, the binding -- is
+    # keyed by the lossy slug. Another live member on the same slug shares it,
+    # so retiring it would take that colleague's activity, briefing, rules and
+    # thread along; that member is renamed (or fired) first.
+    slugmates = [n for n in _member_names_for_slug(cfg, slug) if n != member]
+    if slugmates:
+        return web.json_response(
+            {
+                "error": (
+                    f"'{display_name}' shares its member space with '{slugmates[0]}' "
+                    f"(both shorten to '{slug}'); rename or fire that member first"
+                ),
+                "code": "slug_collision",
+            },
+            status=409,
+        )
+    # The thread is this member's only when the binding names it exactly: a
+    # binding naming a ghost of the same slug (a deleted member) attributes
+    # nothing to fire, and its slot must not be closed as ours.
+    binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
+    if binding is not None and binding.get("member") != member:
+        binding = None
+    slot_key = str(binding.get("slot_key") or "") if binding else ""
+    thread_history_key = _history_key_for(slot_key) if slot_key else ""
+
+    # 1. The thread: close it like the tab does. A failure leaves everything
+    # as it was -- the member still exists and the user can retry.
+    slot = state._slots.get(slot_key) if slot_key else None
+    if slot is not None:
+        try:
+            await close_slot(state, slot, slot_key)
+        except SlotCloseError as exc:
+            return web.json_response(
+                {"error": exc.message, "code": "thread_close_failed"}, status=500
+            )
+
+    intent = {
+        "member": member,
+        "slug": slug,
+        "copy_name": copy_name,
+        "purge": purge,
+        "record": {
+            "display_name": display_name,
+            "slot_key": slot_key,
+            "thread_history_key": thread_history_key,
+            "template": row.template,
+            "template_version": row.template_version,
+            "fired_at": _utc_now_iso(),
+        },
+    }
+    # 2. Row + store, under the config lock, only while the row is still the
+    # one this request saw. The intent marker is written FIRST, in the same
+    # hold: from here on the fire is resumable -- a cleanup step that fails
+    # after the row is gone leaves the marker, the request says so, and the
+    # next fire of this member finishes the job.
+    async with _agents_handlers._get_config_lock():
+        fresh = await asyncio.to_thread(KiroCrewConfig.load)
+        current = fresh.agents.get(member)
+        if current is None:
+            return web.json_response(
+                {"error": f"Crew Member {member!r} not found", "code": "member_not_found"},
+                status=404,
+            )
+        if current.memory_store != generation or current.kiro_agent != copy_name:
+            return web.json_response(
+                {"error": f"Crew Member {member!r} changed concurrently", "code": "member_changed"},
+                status=409,
+            )
+        try:
+            await asyncio.to_thread(_write_fire_marker, member, intent)
+        except (OSError, MemberSlugError) as exc:
+            logger.exception("fire %r: the intent marker could not be written", member)
+            return web.json_response(
+                {"error": f"could not record the fire: {exc}", "code": "fire_not_recorded"},
+                status=500,
+            )
+        try:
+            await _agents_handlers._delete_crew_record(request, member)
+        except UnknownMemoryStore as exc:
+            await asyncio.to_thread(_clear_fire_marker, member)
+            return web.json_response({"error": str(exc), "code": "member_changed"}, status=409)
+        # Steps 3 and 4 run in the SAME config-lock hold: a hire of the same id
+        # (which takes this lock to publish its row) cannot interleave and have
+        # this fire's cleanup remove the copy, pristine copy or space the new
+        # member just received.
+        return await _finish_fire(request, state, member, intent, purge)
+
+
+async def _finish_fire(
+    request: web.Request, state: DashboardState, member: str, intent: dict, purge: bool
+) -> web.Response:
+    """Steps 3 and 4 of a fire -- the member's files and its lived state --
+    from the recorded intent. Every step is idempotent, so this runs the same
+    on a fresh fire and on a resume. Success is answered only once everything
+    is done; a step that fails leaves the marker and answers 500
+    ``fire_incomplete`` (the next fire of this member resumes here).
+
+    *purge* is the CALLER's word for this request, so a resume asked with
+    ``purge: true`` purges what the interrupted archive left; the recorded
+    intent supplies everything else.
+    """
+    # Under the config lock (both callers). The marker is the fired member's:
+    # a row under this id NOW is somebody else -- the hire refuses to publish
+    # while a fire is pending, so this is a hand-edited config -- and its copy,
+    # pristine copy and space are not this fire's to remove.
+    current = (await asyncio.to_thread(KiroCrewConfig.load)).agents.get(member)
+    if current is not None:
+        return web.json_response(
+            {
+                "error": f"a member {member!r} exists again; the interrupted fire's files were "
+                "left in place",
+                "code": "member_changed",
+            },
+            status=409,
+        )
+    slug = str(intent.get("slug") or "")
+    copy_name = str(intent.get("copy_name") or "")
+    raw_record = intent.get("record")
+    record: dict = raw_record if isinstance(raw_record, dict) else {}
+    purge = purge or bool(intent.get("purge"))
+    thread_history_key = str(record.get("thread_history_key") or "")
+    try:
+        # 3. The member's own definition and its pristine copy. The copy goes
+        # only while the sidecar still names this member as its owner and no
+        # row is bound to it -- the same rule the hire's roll-back applies.
+        if copy_name:
+            await asyncio.to_thread(_remove_private_copy, copy_name, member)
+        await asyncio.to_thread(member_templates.remove_pristine_copy, member)
+        # 4. Lived state: archived, or removed on explicit request.
+        archived = await asyncio.to_thread(
+            members_mod.retire_member_space, slug, member=member, record=record, purge=purge
+        )
+    except (OSError, MemberSlugError) as exc:
+        logger.exception("fire %r: the member's files could not be retired", member)
+        return web.json_response(
+            {
+                "error": f"the member's row is gone but its files could not be retired: {exc}; "
+                "fire it again to finish",
+                "code": "fire_incomplete",
+                "resumable": True,
+            },
+            status=500,
+        )
+    # A thread that was bound but never wrote a transcript (opened, nothing
+    # said) has nothing in History to archive or purge: "none", the same as a
+    # member that never opened one. Probed through the log's own key resolver.
+    log = state.conversation_log
+    has_transcript = bool(
+        thread_history_key
+        and log is not None
+        and await asyncio.to_thread(log.has_log, thread_history_key)
+    )
+    thread_state = "archived" if has_transcript else "none"
+    if purge and has_transcript:
+        thread_state = (
+            "purged" if await _purge_thread_history(state, thread_history_key) else "kept"
+        )
+    await asyncio.to_thread(_clear_fire_marker, member)
+    try:
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="member.fire",
+            outcome="success",
+            source="dashboard",
+            resources=f"{member} purge={purge} thread={thread_state}",
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for member.fire failed", exc_info=True)
+    _agents_handlers.clear_list_agents_cache()
+    state.push_refresh("agents")
+    return web.json_response(
+        {
+            "ok": True,
+            "thread": {"history_key": thread_history_key, "state": thread_state},
+            "lived_state": "purged" if purge else ("archived" if archived else "none"),
+        }
+    )
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def _purge_thread_history(state: DashboardState, key: str) -> bool:
+    """Delete a fired member's thread transcript the way ``DELETE /api/sessions/{key}`` does.
+
+    The same sequence as :func:`sessions.api_session_delete` -- claim the
+    slot/transcript route, bind cron ownership, unlink under the transcript
+    lock, remove the slot -- composed here rather than routed through that
+    handler so the fire can report the outcome. False when the path refuses
+    (no conversation log, a cron owns the transcript, the store is unreadable):
+    the transcript is then KEPT and the fire says so.
+    """
+    from dataclasses import replace
+
+    from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
+    from kiro_crew.dashboard.handlers import sessions as _sessions
+
+    if not state.conversation_log:
+        return False
+    claim = _sessions._capture_history_delete_claim(state, key)
+    crons = getattr(state, "crons", None)
+    try:
+        swept = await _sessions._owner_keys_bound_to_transcript(crons, (key,))
+    except (CronStoreBusy, CronStoreUnreadable):
+        logger.warning("fire: the cron store could not be read; thread %s kept", key)
+        return False
+    try:
+        ok, claim = await asyncio.to_thread(
+            _sessions._delete_history_session,
+            state.conversation_log,
+            key,
+            claim,
+            exact_owner_keys=swept.get(key, ()),
+        )
+    except _sessions._OwnerKeyUnreadable:
+        logger.warning("fire: a cron owner claim on thread %s is unreadable; kept", key)
+        return False
+    if not ok:
+        return False
+    after = await _sessions._owner_keys_after_unlink(crons, (key,))
+    claim = replace(claim, cron_owner_keys=(claim.cron_owner_keys | frozenset(after.get(key, ()))))
+    try:
+        await _sessions._remove_slot_for_history_key(state, key, delete_claim=claim)
+    except Exception:
+        logger.warning("fire: slot cleanup failed for thread %s", key, exc_info=True)
+    state.push_slots_update()
+    state.push_refresh("history")
+    return True

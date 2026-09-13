@@ -14952,7 +14952,22 @@
       "detach_confirm": "Sí, desvincular",
       "detach_explain": "Este miembro conserva su archivo de agente, rol, disparadores, briefing e historial, y deja de seguir a {{app}}. Desvincular no se puede deshacer; volver a vincular es una nueva contratación.",
       "detach_failed": "No se pudo desvincular al miembro.",
-      "role_update_member_moved": "Este miembro se editó desde que se hizo este plan. Revísalo de nuevo."
+      "role_update_member_moved": "Este miembro se editó desde que se hizo este plan. Revísalo de nuevo.",
+      "fire": "Despedir a {{name}}",
+      "fire_explain": "Despedir retira a este miembro: su archivo de agente y su entrada en la lista desaparecen. Su hilo, actividad y notas se conservan en el Historial salvo que indiques lo contrario.",
+      "fire_confirm_explain": "¿Despedir a {{name}}? Se eliminan la entrada de la lista, el archivo de agente y la copia de la plantilla, y la memoria privada se archiva. El hilo, la actividad, el briefing y las reglas se archivan, no se borran.",
+      "fire_purge_label": "Borrar también el hilo, la actividad, el briefing y las reglas. No se puede deshacer.",
+      "fire_confirm": "Sí, despedir",
+      "fire_confirm_purge": "Sí, despedir y borrar",
+      "firing": "Despidiendo…",
+      "fire_failed": "No se pudo despedir al miembro.",
+      "fired_summary": "{{name}} ha sido despedido.",
+      "fired_thread_archived": "Su hilo sigue en el Historial; su actividad y notas están archivadas.",
+      "fired_thread_purged": "Su hilo, actividad y notas se borraron.",
+      "fired_thread_kept": "Su actividad y notas se borraron, pero el hilo no pudo borrarse: sigue en el Historial (puede pertenecer a una tarea programada).",
+      "fired_thread_none": "No tenía hilo en el Historial; su actividad y notas están archivadas.",
+      "fired_dismiss": "Descartar",
+      "fired_thread_none_purged": "No tenía hilo en el Historial; su actividad y notas se borraron."
     }
   },
   "privacyDisclosure": {

@@ -23,7 +23,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
+import stat as stat_mod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -330,6 +332,264 @@ def slug_for_name(name: str) -> str:
     if base == "artifact":
         base = "member"
     return validate_slug(base)
+
+
+#: Where a fired member's lived state goes (``members/.retired/``). Outside the
+#: slug grammar (a slug cannot start with ``.``), so no member can be named it.
+RETIRED_DIR_NAME = ".retired"
+#: The record a retirement leaves beside the archived space.
+FIRED_RECORD_FILE = "fired.json"
+
+
+def retired_root() -> Path:
+    """``members/.retired/``, pinned: created if absent, never a link.
+
+    The members root is agent-writable, so an agent can plant ``.retired`` as
+    a symlink and have a fire follow it -- the archive of another member's
+    lived state, and the protected rules beside it, would then land wherever
+    the link points. The root is therefore taken as a plain directory only: a
+    link (or anything else that is not a directory) at that name raises
+    :class:`MemberSlugError` and the fire stops before it archives anything.
+    """
+    root = members_root().resolve()
+    retired = root / RETIRED_DIR_NAME
+    if retired.is_symlink() or (retired.exists() and not retired.is_dir()):
+        raise MemberSlugError(f"{retired} is not a plain directory; refusing to archive into it")
+    retired.mkdir(parents=True, exist_ok=True)
+    # Re-checked after the mkdir: a link planted between the check and the
+    # create would have been followed by mkdir(exist_ok=True).
+    if retired.is_symlink() or retired.resolve().parent != root:
+        raise MemberSlugError(f"{retired} is not a plain directory; refusing to archive into it")
+    return retired
+
+
+def retired_rules_root() -> Path:
+    """Where archived rules go: under the protected ``trust/`` rules subtree,
+    never the agent-writable members root -- a fired member's permanent rules
+    stay as unreachable to agent file tools as they were while it lived."""
+    root = (data_home() / "trust" / RULES_DIR_NAME).resolve()
+    retired = root / RETIRED_DIR_NAME
+    if retired.is_symlink() or (retired.exists() and not retired.is_dir()):
+        raise MemberSlugError(f"{retired} is not a plain directory; refusing to archive into it")
+    retired.mkdir(parents=True, exist_ok=True)
+    if retired.is_symlink() or retired.resolve().parent != root:
+        raise MemberSlugError(f"{retired} is not a plain directory; refusing to archive into it")
+    return retired
+
+
+def retire_member_space(
+    slug: str,
+    *,
+    member: str,
+    record: dict,
+    purge: bool = False,
+) -> Path | None:
+    """Archive (or, with *purge*, destroy) a fired member's lived state.
+
+    The lived state is ``members/<slug>/`` -- activity log, briefing -- plus,
+    under ``trust/``, the member's rules and its DM-thread binding. Archive
+    moves the directory to ``members/.retired/<slug>--<stamp>/`` in one rename
+    and writes ``fired.json`` there (*record*: member id, display name, the
+    thread's slot and history keys, when, from which template), so the thread
+    the History tab still lists can be tied back to the colleague it belonged
+    to; the rules file moves to ``trust/<rules>/.retired/<slug>--<stamp>.json``
+    -- the same protected subtree it lived in, never the agent-writable
+    archive. Purge removes the directory and the rules instead. The binding
+    goes only when it names *member*: a binding is only usable when it names
+    the exact member, and one naming somebody else on the same slug is not
+    this fire's to remove. Returns the archive path, or ``None`` when nothing
+    was archived (a member that never wrote anything, or a purge).
+
+    **Idempotent**, so a fire interrupted after the row went can be resumed:
+    a directory, rules file or binding already gone is skipped, never an
+    error. The member directory is agent-writable, so the move refuses a
+    symlink at the directory's own name (removed as a link, never followed),
+    :func:`member_dir` has already refused a directory resolving outside the
+    members root, and :func:`retired_root` refuses a planted archive root.
+    Blocking IO: call off the loop.
+    """
+    validate_slug(slug)
+    root = members_root().resolve()
+    target = root / slug
+    rules = member_rules_path(slug)
+    archived: Path | None = None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    def _archive_dir() -> Path:
+        nonlocal archived
+        if archived is None:
+            retired = retired_root()
+            candidate = retired / f"{slug}--{stamp}"
+            suffix = 2
+            while candidate.exists():
+                candidate = retired / f"{slug}--{stamp}-{suffix}"
+                suffix += 1
+            archived = candidate
+        return archived
+
+    if _DIR_FD_SUPPORTED:
+        _move_member_dir_pinned(root, slug, purge, _archive_dir)
+    elif target.is_symlink():
+        target.unlink()
+    elif target.is_dir():
+        # Containment, as member_dir checks it: a resolved path outside the root
+        # is not this member's space.
+        if root not in target.resolve().parents:
+            raise MemberSlugError(f"member slug {slug!r} escapes {root}")
+        if purge:
+            shutil.rmtree(target)
+        else:
+            os.rename(target, _archive_dir())
+    if rules.is_file() and not rules.is_symlink():
+        if purge:
+            rules.unlink()
+        else:
+            dest = retired_rules_root() / f"{slug}--{stamp}.json"
+            suffix = 2
+            while dest.exists():
+                dest = retired_rules_root() / f"{slug}--{stamp}-{suffix}.json"
+                suffix += 1
+            os.replace(rules, dest)
+            if archived is None:
+                _archive_dir()
+    if archived is not None:
+        _write_fired_record(
+            archived,
+            json.dumps(dict(record, member=member, slug=slug), indent=2, ensure_ascii=False),
+        )
+    remove_dm_binding_of(slug, member)
+    return archived
+
+
+#: ``dir_fd``-relative rename/open/lstat are what pin a directory by descriptor
+#: (POSIX). Windows has none of them; the path-based flow with its lstat checks
+#: is what runs there (symlinks need a privilege on Windows in the first place).
+_DIR_FD_SUPPORTED = (
+    os.rename in os.supports_dir_fd
+    and os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.unlink in os.supports_dir_fd
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+)
+
+
+def _open_dir_nofollow(path: str | Path, *, dir_fd: int | None = None) -> int:
+    """Open *path* as a directory without following a link at its final
+    component; ``NotADirectoryError``/``OSError`` when it is not a plain dir."""
+    return os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+
+
+def _move_member_dir_pinned(root: Path, slug: str, purge: bool, archive_dir) -> None:
+    """Retire ``members/<slug>/`` with every step relative to pinned descriptors.
+
+    A path-based ``is_dir()`` then ``os.rename(path)`` is two lookups of an
+    agent-writable name: between them the agent can swap the directory for a
+    symlink, and the rename (or the writes that follow) then acts on whatever
+    the link points at. Here the members root and the archive root are opened
+    ONCE as directories (``O_NOFOLLOW``), the entry is ``lstat``-ed relative to
+    the root descriptor, a link is unlinked relative to it, a directory is
+    renamed relative to both descriptors -- one lookup each, nothing between a
+    check and its use resolves the name again.
+    """
+    try:
+        root_fd = _open_dir_nofollow(root)
+    except FileNotFoundError:
+        return  # no members root yet: nothing lived
+    try:
+        try:
+            st = os.lstat(slug, dir_fd=root_fd)
+        except FileNotFoundError:
+            return
+        if stat_mod.S_ISLNK(st.st_mode):
+            os.unlink(slug, dir_fd=root_fd)
+            return
+        if not stat_mod.S_ISDIR(st.st_mode):
+            return
+        if purge:
+            # rmtree walks by path; pin the walk to the entry as it is NOW
+            # (a directory, just verified) through its own descriptor.
+            entry_fd = _open_dir_nofollow(slug, dir_fd=root_fd)
+            try:
+                _rmtree_fd(entry_fd)
+            finally:
+                os.close(entry_fd)
+            os.rmdir(slug, dir_fd=root_fd)
+            return
+        dest: Path = archive_dir()
+        retired_fd = _open_dir_nofollow(dest.parent)
+        try:
+            os.rename(slug, dest.name, src_dir_fd=root_fd, dst_dir_fd=retired_fd)
+        finally:
+            os.close(retired_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _rmtree_fd(dir_fd: int) -> None:
+    """Remove a directory's contents relative to its descriptor (never following links)."""
+    for entry in os.listdir(dir_fd):
+        st = os.lstat(entry, dir_fd=dir_fd)
+        if stat_mod.S_ISDIR(st.st_mode):
+            child = _open_dir_nofollow(entry, dir_fd=dir_fd)
+            try:
+                _rmtree_fd(child)
+            finally:
+                os.close(child)
+            os.rmdir(entry, dir_fd=dir_fd)
+        else:
+            os.unlink(entry, dir_fd=dir_fd)
+
+
+def _write_fired_record(archived: Path, text: str) -> None:
+    """Write ``fired.json`` into the archive directory without following a link
+    planted at the archive's name after the rename (the archive root is itself
+    agent-writable ground)."""
+    if not _DIR_FD_SUPPORTED:
+        archived.mkdir(parents=True, exist_ok=True)
+        (archived / FIRED_RECORD_FILE).write_text(text, encoding="utf-8")
+        return
+    retired_fd = _open_dir_nofollow(archived.parent)
+    try:
+        try:
+            os.mkdir(archived.name, dir_fd=retired_fd)
+        except FileExistsError:
+            pass
+        arch_fd = _open_dir_nofollow(archived.name, dir_fd=retired_fd)
+        try:
+            fd = os.open(
+                FIRED_RECORD_FILE,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=arch_fd,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        finally:
+            os.close(arch_fd)
+    finally:
+        os.close(retired_fd)
+
+
+def remove_dm_binding_of(slug: str, member: str) -> bool:
+    """Remove the slug's DM binding if it names *member* (or is unusable).
+
+    Slugification is lossy: a binding under this slug may attribute the thread
+    to another member of the same slug, and that one is not *member*'s to
+    remove. A binding that does not read (malformed, tampered) is removed --
+    it attributes nothing. Returns whether a file was removed.
+    """
+    try:
+        path = dm_binding_path(slug)
+    except MemberSlugError:
+        return False
+    if not path.exists():
+        return False
+    current = read_dm_binding(slug)
+    if current is not None and current.get("member") != member:
+        return False
+    path.unlink(missing_ok=True)
+    return True
 
 
 def member_dir(slug: str) -> Path:

@@ -14951,7 +14951,22 @@
       "detach_confirm": "Sim, desvincular",
       "detach_explain": "Este membro mantém o arquivo de agente, cargo, gatilhos, briefing e histórico, e deixa de seguir {{app}}. Desvincular não pode ser desfeito; vincular de novo é uma nova contratação.",
       "detach_failed": "Não foi possível desvincular o membro.",
-      "role_update_member_moved": "Este membro foi editado desde que este plano foi feito. Revise-o de novo."
+      "role_update_member_moved": "Este membro foi editado desde que este plano foi feito. Revise-o de novo.",
+      "fire": "Demitir {{name}}",
+      "fire_explain": "Demitir aposenta este membro: o arquivo de agente e a entrada na lista somem. O thread, a atividade e as notas ficam no Histórico, salvo indicação em contrário.",
+      "fire_confirm_explain": "Demitir {{name}}? A entrada na lista, o arquivo de agente e a cópia do modelo são removidos e a memória privada é arquivada. Thread, atividade, briefing e regras são arquivados, não apagados.",
+      "fire_purge_label": "Apagar também o thread, a atividade, o briefing e as regras. Não pode ser desfeito.",
+      "fire_confirm": "Sim, demitir",
+      "fire_confirm_purge": "Sim, demitir e apagar",
+      "firing": "Demitindo…",
+      "fire_failed": "Não foi possível demitir o membro.",
+      "fired_summary": "{{name}} foi demitido.",
+      "fired_thread_archived": "O thread fica no Histórico; a atividade e as notas estão arquivadas.",
+      "fired_thread_purged": "Thread, atividade e notas foram apagados.",
+      "fired_thread_kept": "Atividade e notas foram apagadas, mas o thread não pôde ser: ele ainda está no Histórico (um job agendado pode possuí-lo).",
+      "fired_thread_none": "Não havia thread no Histórico; a atividade e as notas estão arquivadas.",
+      "fired_dismiss": "Dispensar",
+      "fired_thread_none_purged": "Não havia thread no Histórico; a atividade e as notas foram apagadas."
     }
   },
   "privacyDisclosure": {

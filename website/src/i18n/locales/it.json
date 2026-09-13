@@ -14951,7 +14951,22 @@
       "detach_confirm": "Sì, scollega",
       "detach_explain": "Questo membro conserva file agente, ruolo, trigger, briefing e cronologia e smette di seguire {{app}}. Lo scollegamento non si può annullare; ricollegare è una nuova assunzione.",
       "detach_failed": "Impossibile scollegare il membro.",
-      "role_update_member_moved": "Questo membro è stato modificato da quando è stato fatto questo piano. Rivedilo."
+      "role_update_member_moved": "Questo membro è stato modificato da quando è stato fatto questo piano. Rivedilo.",
+      "fire": "Licenzia {{name}}",
+      "fire_explain": "Licenziare ritira questo membro: il file agente e la voce nell’elenco scompaiono. Thread, attività e note restano nella Cronologia salvo diversa indicazione.",
+      "fire_confirm_explain": "Licenziare {{name}}? Voce nell’elenco, file agente e copia del modello vengono rimossi e la memoria privata viene archiviata. Thread, attività, briefing e regole vengono archiviati, non eliminati.",
+      "fire_purge_label": "Elimina anche thread, attività, briefing e regole. Non si può annullare.",
+      "fire_confirm": "Sì, licenzia",
+      "fire_confirm_purge": "Sì, licenzia ed elimina",
+      "firing": "Licenziamento…",
+      "fire_failed": "Impossibile licenziare il membro.",
+      "fired_summary": "{{name}} è stato licenziato.",
+      "fired_thread_archived": "Il thread resta nella Cronologia; attività e note sono archiviate.",
+      "fired_thread_purged": "Thread, attività e note sono stati eliminati.",
+      "fired_thread_kept": "Attività e note sono state eliminate, ma il thread no: è ancora nella Cronologia (potrebbe appartenere a un job pianificato).",
+      "fired_thread_none": "Nessun thread nella Cronologia; attività e note sono archiviate.",
+      "fired_dismiss": "Chiudi",
+      "fired_thread_none_purged": "Nessun thread nella Cronologia; attività e note sono state eliminate."
     }
   },
   "privacyDisclosure": {

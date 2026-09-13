@@ -14564,7 +14564,22 @@
       "detach_confirm": "예, 분리",
       "detach_explain": "이 멤버는 에이전트 파일, 역할, 트리거, 브리핑, 기록을 유지하며 {{app}}을(를) 더 이상 따르지 않습니다. 분리는 취소할 수 없으며, 다시 연결하려면 새로 채용해야 합니다.",
       "detach_failed": "멤버를 분리할 수 없습니다.",
-      "role_update_member_moved": "이 계획을 만든 뒤 이 멤버가 편집되었습니다. 다시 검토하세요."
+      "role_update_member_moved": "이 계획을 만든 뒤 이 멤버가 편집되었습니다. 다시 검토하세요.",
+      "fire": "{{name}} 해고",
+      "fire_explain": "해고하면 이 멤버는 물러납니다. 에이전트 파일과 명단 항목이 삭제됩니다. 스레드, 활동, 메모는 달리 지정하지 않으면 기록에 남습니다.",
+      "fire_confirm_explain": "{{name}}을(를) 해고할까요? 명단 항목, 에이전트 파일, 템플릿 복사본이 제거되고 개인 메모리는 보관됩니다. 스레드, 활동, 브리핑, 규칙은 보관되며 삭제되지 않습니다.",
+      "fire_purge_label": "스레드, 활동, 브리핑, 규칙도 삭제합니다. 되돌릴 수 없습니다.",
+      "fire_confirm": "예, 해고",
+      "fire_confirm_purge": "예, 해고하고 삭제",
+      "firing": "해고 중…",
+      "fire_failed": "멤버를 해고할 수 없습니다.",
+      "fired_summary": "{{name}}이(가) 해고되었습니다.",
+      "fired_thread_archived": "스레드는 기록에 남고, 활동과 메모는 보관되었습니다.",
+      "fired_thread_purged": "스레드, 활동, 메모가 삭제되었습니다.",
+      "fired_thread_kept": "활동과 메모는 삭제되었지만 스레드는 삭제할 수 없어 기록에 남아 있습니다(예약된 작업이 소유하고 있을 수 있습니다).",
+      "fired_thread_none": "기록에 스레드가 없었습니다. 활동과 메모는 보관되었습니다.",
+      "fired_dismiss": "닫기",
+      "fired_thread_none_purged": "기록에 스레드가 없었습니다. 활동과 메모는 삭제되었습니다."
     }
   },
   "privacyDisclosure": {

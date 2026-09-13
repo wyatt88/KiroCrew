@@ -459,6 +459,118 @@ else, and refuses a member replaced under it) and `RoleUpdatePanel.test.tsx`
 and fingerprint, `template_changed` and `member_changed_since_plan` said in place,
 unavailable reasons, two-step detach).
 
+## Fire (design step 5): `POST /api/members/{member}/fire`
+
+Fire is the reverse of hire, and the design's decision 3 is the archive policy:
+**archive the DM thread and activity like a closed session; destroy only on
+explicit request.** Body `{"purge": false}` (optional; a non-boolean is 400
+`invalid_purge`). Owner-gated; the default member cannot be fired (409
+`cannot_fire_default` -- make another member the default first); an unknown id
+is 404 -- unless a fire of it was interrupted (below). A member that shares its
+slug with another LIVE member is refused (409 `slug_collision`): `members/<slug>/`,
+the rules and the binding are keyed by the lossy slug, so retiring them would take
+the colleague's along; that member is renamed or fired first. The whole fire runs
+under `_dm_thread_lock`, the lock the thread open (`POST /api/members/{slug}/thread`)
+holds from its binding read to its binding write, so an open cannot re-bind the slug
+between the fire's binding read and its retirement.
+
+Order, and why: (1) the **thread** is closed first through the tab's own close
+path (`chat_handlers.close_slot` on the slot the DM binding names -- only when the
+binding names THIS member exactly: one left by a deleted same-slug member attributes
+nothing to fire, closes no slot and reports no thread -- the same
+sequence the tab's close runs: tombstone, retire the nudge loop, notify the owning
+app, persist as closed, tear down the session), so a live session never keeps
+running against a row that is about to vanish; its transcript stays in the History
+tab under `dashboard:<slot key>`. A close that fails (500 `thread_close_failed`)
+leaves the member whole. (2) **Row + store**, under the config lock and only while
+the row is still the one the request saw (binding and store generation unchanged,
+else 409 `member_changed`): first the fire's **intent marker** is written to
+`trust/member-fires/<member id>.json` (slug, copy, purge, the `fired.json` record;
+500 `fire_not_recorded` when it cannot be, nothing removed), then
+`_delete_crew_record`, the delete route's own mutation
+-- the row removed, a private V2 store archived under the ordinary retirement
+marker (never erased; the memory admin surface restores it), cached handles
+released. Steps 3 and 4 then run in the SAME config-lock hold (a hire of the same id
+takes that lock to publish, so it cannot interleave and lose the copy, pristine copy
+or space it just received to this fire's cleanup), and the hire's `admit` hook
+refuses to publish under an id whose fire is still pending (409 `fire_pending`).
+From here the fire is **resumable**: steps 3 and 4 are idempotent and run
+from the marker (`_finish_fire`, under the config lock; a row under the id at that
+point -- a hand-edited config -- is somebody else's member and is refused, 409
+`member_changed`, marker kept); a step that fails after the row is gone answers
+500 `fire_incomplete` (`resumable: true`) and leaves the marker, never a success
+that left a same-name re-hire to inherit stale state, and the next fire of that id
+-- which has no row -- resumes the cleanup instead of answering 404; the marker is
+cleared only once everything is done. (3) The member's **own agent file** goes (`_remove_private_copy`, only
+while the sidecar names this member as the copy's owner and no row is bound to it
+-- the shared template a hire copied from is never touched) and so does its
+**pristine copy**. (4) **Lived state** (`members.retire_member_space`): archive
+moves `members/<slug>/` (activity, briefing) to `members/.retired/<slug>--<stamp>/`
+in one rename and writes `fired.json` there (member id, display name, the thread's
+slot and history keys, template and version, when), so the thread History still
+lists can be tied back to the colleague it belonged to; the member's rules file
+moves to `trust/member-rules/.retired/<slug>--<stamp>.json` -- the same protected
+subtree it lived in, never the agent-writable archive; the DM binding is removed
+only when it names this member (`remove_dm_binding_of`; one naming another member
+of the slug is that member's, an unreadable one attributes nothing and goes) -- a
+same-name hire later starts from nothing. `.retired` is outside the slug grammar,
+so no member can be named it; a symlink planted at the member directory's name is
+removed as a link, never moved or followed -- and on POSIX every step of the move is
+relative to **pinned descriptors** (`_move_member_dir_pinned`: the members root and
+the archive root opened once as directories with `O_NOFOLLOW`, the entry `lstat`-ed,
+unlinked or renamed relative to them, the record written through a descriptor of the
+archive directory), so a directory swapped for a link between a check and the
+rename is unlinked, never renamed or written through; and both archive roots are **pinned**
+(`retired_root`, `retired_rules_root`): a link or a plain file planted at
+`.retired` is refused with `MemberSlugError` before anything moves, re-checked after
+the `mkdir`, so a fire never archives lived state or protected rules wherever an
+agent pointed the link. With **`purge: true`** the directory and the rules
+are removed instead of archived, and the thread's transcript is deleted through
+the same sequence `DELETE /api/sessions/{key}` runs (`_purge_thread_history`:
+claim the slot/transcript route, bind cron ownership, unlink under the transcript
+lock, remove the slot) -- and when that path refuses (a cron still owns the
+transcript, an unreadable store or index) the thread is reported **kept**, never
+claimed gone. A thread that was bound but never wrote a transcript (opened,
+nothing said; probed with the log's `has_log`) has nothing in History to archive
+or purge and reads `none`, the same as a member that never opened one. The answer says what happened:
+`{ok, thread: {history_key, state: archived|purged|kept|none}, lived_state:
+archived|purged|none}`. The crew editor's `DELETE /api/agents/{name}` stays the
+crew-centric removal; fire is the member's verb and the only one that touches
+lived state.
+
+Frontend (`pages/members/FirePanel.tsx`, at the foot of the drawer, withheld for
+the default member -- the roster row carries `is_default` for exactly this):
+**Fire <name>** opens a two-step confirm that says what goes and what stays, with
+a **purge** tick ("Also delete the thread, activity, briefing and rules. This
+cannot be undone.") that relabels the confirm to *Yes, fire and delete*. The fire
+hands the outcome up (`onFired`) and the page navigates to the roster the moment
+it completes -- the drawer unmounts with the member, so the outcome is said THERE,
+in a dismissible notice (`member-fired-notice`, Lucide `X` to dismiss): thread
+archived / deleted / KEPT because the history path refused / none. Pinned in
+`test/test_member_fire.py` (**the step-5 gate**: row, copy, lineage and
+pristine copy gone, the shared template untouched, the store archived under the
+retirement marker, activity moved to `.retired` with a `fired.json` naming the
+member, its thread's history key and its template, the rules archived under the
+protected `trust/` subtree, the binding gone;
+the open thread is closed through the tab's path before the row goes and a close
+that fails leaves the member whole; purge removes the lived state and reports a
+thread the history path could not delete as kept, and as purged when it could;
+a member that never lived leaves nothing to archive; the default is refused and
+bad bodies are 400; a member that changed under the request is not fired; the
+same name can be hired again afterwards and starts from nothing; a link planted
+at the member directory is removed, never followed; a link or a file planted at
+`.retired` refuses the archive with nothing moved; only a binding naming the member
+is removed; a member sharing its slug with a live colleague is refused before
+anything is closed; a binding naming a ghost of the slug closes no slot and
+reports no thread; a fire interrupted after the row went answers `fire_incomplete`,
+leaves the marker and is finished by the next fire, while an unknown member with
+nothing pending is still 404; a hire under a pending id is refused until the fire
+finishes; the cleanup runs with the config lock held; a resume with a row under
+the id refuses and keeps the marker; a directory swapped for a link mid-retire is
+unlinked, never followed; the fire holds the thread lock) and
+`FirePanel.test.tsx` (two-step, archive by default, the outcome handed up, purge as
+an explicit tick with a kept thread said, a refused fire kept in view).
+
 ## Selection: the `select_crew` contract
 
 `select_crew` has two modes, both answered as JSON by `_do_select_crew`.

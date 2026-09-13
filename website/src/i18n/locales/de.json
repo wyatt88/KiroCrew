@@ -14758,7 +14758,22 @@
       "detach_confirm": "Ja, trennen",
       "detach_explain": "Dieses Mitglied behält Agent-Datei, Rolle, Trigger, Briefing und Verlauf und folgt {{app}} nicht mehr. Das Trennen lässt sich nicht rückgängig machen; eine neue Verknüpfung ist eine neue Einstellung.",
       "detach_failed": "Das Mitglied konnte nicht getrennt werden.",
-      "role_update_member_moved": "Dieses Mitglied wurde seit diesem Plan bearbeitet. Prüfe ihn erneut."
+      "role_update_member_moved": "Dieses Mitglied wurde seit diesem Plan bearbeitet. Prüfe ihn erneut.",
+      "fire": "{{name}} entlassen",
+      "fire_explain": "Entlassen setzt dieses Mitglied ab: Agent-Datei und Rostereintrag werden entfernt. Thread, Aktivität und Notizen bleiben im Verlauf, sofern du nichts anderes sagst.",
+      "fire_confirm_explain": "{{name}} entlassen? Rostereintrag, Agent-Datei und Vorlagenkopie werden entfernt, das private Gedächtnis wird archiviert. Thread, Aktivität, Briefing und Regeln werden archiviert, nicht gelöscht.",
+      "fire_purge_label": "Auch Thread, Aktivität, Briefing und Regeln löschen. Das lässt sich nicht rückgängig machen.",
+      "fire_confirm": "Ja, entlassen",
+      "fire_confirm_purge": "Ja, entlassen und löschen",
+      "firing": "Wird entlassen…",
+      "fire_failed": "Das Mitglied konnte nicht entlassen werden.",
+      "fired_summary": "{{name}} wurde entlassen.",
+      "fired_thread_archived": "Der Thread bleibt im Verlauf; Aktivität und Notizen sind archiviert.",
+      "fired_thread_purged": "Thread, Aktivität und Notizen wurden gelöscht.",
+      "fired_thread_kept": "Aktivität und Notizen wurden gelöscht, der Thread jedoch nicht – er ist noch im Verlauf (ein geplanter Job könnte ihn besitzen).",
+      "fired_thread_none": "Es gab keinen Thread im Verlauf; Aktivität und Notizen sind archiviert.",
+      "fired_dismiss": "Ausblenden",
+      "fired_thread_none_purged": "Es gab keinen Thread im Verlauf; Aktivität und Notizen wurden gelöscht."
     }
   },
   "privacyDisclosure": {
