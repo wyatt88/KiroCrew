@@ -652,6 +652,58 @@ class TestBindingPersistence:
         assert restored.remote_slot == "peer-chat-9"
         assert restored.is_remote is True
 
+    def test_a_peer_only_effort_survives_the_rehydrate(self, tmp_path):
+        """A level the peer runs and this process has never seen must survive.
+
+        Membership-checking it against the LOCAL vocabulary blanks it, the picker
+        then seeds empty, and the user's first pick forwards and overwrites the
+        peer's live setting — the corruption inheriting the level prevents.
+        """
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+            get_reasoning_effort_values,
+        )
+
+        # Precondition: this level is genuinely unknown to this process, so the
+        # assertion cannot pass because the vocabulary happens to contain it.
+        assert "turbo" not in get_reasoning_effort_values()
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = "peer-chat-9"
+        slot.reasoning_effort = "turbo"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.reasoning_effort == "turbo"
+
+    def test_a_local_slot_still_loses_an_unknown_effort_on_rehydrate(self, tmp_path):
+        """The relaxation is scoped to the remote marker: a local slot's level is
+        meaningful only in this process's vocabulary, so an unrecognised one is
+        still corruption and is still dropped."""
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.reasoning_effort = "turbo"
+        slot.append("assistant", "hello", "msg msg-a")
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+        assert restored is not None
+        assert restored.executor != "remote"
+        assert restored.reasoning_effort == ""
+
     def test_the_empty_window_merge_persists_a_complete_binding(self, tmp_path):
         """The window is empty for the whole gap before the first relayed row.
 
@@ -1885,6 +1937,42 @@ class TestPeerTurnRequest:
         assert kwargs["params"] == {"relay": "1"}
         # The PEER's slot key, and only the message — see the known gap in the PR.
         assert json.loads(kwargs["data"]) == {"message": "hi", "slot": "peer-chat-9"}
+
+    @pytest.mark.asyncio
+    async def test_a_locally_pinned_model_is_still_not_relayed(self, tmp_path):
+        """The adopt path copies the peer's ``model`` onto the local slot, and this
+        pins that doing so did NOT turn into a routing change.
+
+        The inherited value is display state -- the header's pin, the context
+        denominator, the picker's starting value. Execution stays where it always
+        was: the peer's own slot decides what answers, because the turn body names
+        only the message and the peer key. Were a model ever added here, an
+        inherited (or stale) local value would start dictating the peer's model
+        per turn, which is exactly the overwrite the inherit exists to prevent.
+        """
+        state = _make_state(tmp_path)
+        mgr = MagicMock()
+        mgr.peer_version = AsyncMock(return_value=(True, kiro_crew.__version__))
+
+        class _Streaming(_FakeUpstream):
+            def __init__(self):
+                super().__init__(200, b"")
+                self.content = SimpleNamespace(iter_any=self._iter)
+
+            async def _iter(self):
+                yield b"data: [DONE]\n\n"
+
+        mgr.proxy_request = MagicMock(return_value=_Streaming())
+        state.instances_manager = mgr
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+        slot.model = "claude-opus-4.5"
+
+        await relay_remote_turn(state, slot, "hi")
+
+        body = json.loads(mgr.proxy_request.call_args.kwargs["data"])
+        assert body == {"message": "hi", "slot": "peer-chat-9"}
+        assert "model" not in body
 
     @pytest.mark.asyncio
     async def test_a_peer_that_refuses_the_turn_becomes_an_error_row(self, tmp_path):

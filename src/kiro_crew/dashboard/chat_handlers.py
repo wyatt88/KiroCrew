@@ -63,6 +63,7 @@ from kiro_crew.dashboard.chat_persistence import (
     _restored_mode,
     _validate_autocompact_pct,
     get_reasoning_effort_values,
+    is_safe_effort_shape,
     pin_private_agent_store,
     save_slot_off_loop,
 )
@@ -2399,6 +2400,11 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         name = str(name)
     agent = body.get("agent", "")
     model = body.get("model", "")
+    # No body read for the effort on purpose: this endpoint has never accepted
+    # one, and `api_chat_slot_reasoning_effort` owns setting it. Initialized here
+    # only so the peer-binding stamp below is safe on the MINT path too, where a
+    # brand-new peer session has no effort to inherit and "" is the honest record.
+    reasoning_effort = ""
     # Folder membership at BIRTH. Assigning it afterwards (client PATCH) is
     # visibly too late: get_or_create_slot broadcasts the new slot before this
     # handler returns, so the dashboard renders it at the top level for a frame
@@ -2658,6 +2664,37 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # surrounding resolve/normalize steps are skipped for every peer-bound
         # create precisely because they answer from THIS machine's roster.
         agent = peer_meta.get("agent", "")
+        # The model too, unconditionally, and this one is a REPAIR rather than a
+        # preference. Execution never depended on it -- the relayed turn body
+        # carries no model, so the peer's slot has always decided what answers --
+        # but three pieces of LOCAL state read `slot.model`: the header's pin
+        # display, the context/autocompact window's denominator, and the model
+        # picker's current value. Leaving it `""` for a peer session that is
+        # actually pinned made the third one destructive: the picker is fed from
+        # the PEER's roster, so the user's first pick was forwarded by
+        # `forward_peer_selection` and overwrote the peer's real pin on a live
+        # conversation.
+        #
+        # No `or model` fallback, for the same reason as the agent above: an empty
+        # peer value means the peer session runs on ITS default, and resolving
+        # that to the REQUEST's model would pin the peer's conversation to
+        # something nobody chose for it.
+        model = peer_meta.get("model", "")
+        # And the effort, which is the SAME defect as the model rather than a new
+        # one: `_PEER_CONTROL_SEGMENTS` makes four controls forwardable (agent,
+        # model, workspace, reasoning_effort), and each one this slot leaves empty
+        # is a control whose picker is seeded from the PEER's roster with no
+        # current value -- so the user's first pick reads as a change and
+        # `forward_peer_selection` overwrites the peer's real setting on a live
+        # conversation. Fixing only the model would have left this instance of a
+        # pattern this PR's own harvest names.
+        #
+        # `workspace` is deliberately NOT inherited: it is resolved from THIS
+        # machine's agent bindings (which is why the peer-bound create skips that
+        # resolution entirely -- "the peer resolves its own") and it feeds local
+        # project/memory-store selection, so importing a peer-resolved value would
+        # claim a workspace this machine never resolved.
+        reasoning_effort = peer_meta.get("reasoning_effort", "")
         # Read the history BEFORE `get_or_create_slot`, so the peer round-trip
         # happens outside the `suspend_slots_push` block below. That suspension is
         # process-wide: holding it across a transcript read would defer every other
@@ -2861,6 +2898,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot.executor = "remote"
             slot.instance_id = instance_id
             slot.remote_slot = remote_slot_key
+            # Stamped with the binding rather than passed to get_or_create_slot,
+            # which takes no effort argument. Guarded rather than unconditional:
+            # `_ChatSlot` already defaults this to "", so writing "" back on a mint
+            # (or on an adopt of a peer with no level) would be a no-op ride-along.
+            if reasoning_effort:
+                slot.reasoning_effort = reasoning_effort
         if slot.is_restricted:
             logger.info("Slot %s created with memory_mode=%s", slot.key, slot.memory_mode)
         # App ownership check (App Kit §5.2), same deny-by-default rule as
@@ -7788,6 +7831,27 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     effort = body.get("reasoning_effort", "")
+    if slot.is_remote:
+        # Shape, not membership: the local level set is grown by
+        # ``update_reasoning_effort_values`` from LOCAL ACP session config, so two
+        # machines on the same build can hold different sets and a hub that mostly
+        # drives peers holds barely more than the fallback. Membership here would
+        # 400 the level this slot INHERITED from the peer -- visible in the box,
+        # refused on re-selection -- and the peer is the only authority that can
+        # judge its own vocabulary. It re-validates on receipt; this keeps a
+        # malformed value off the wire. "" is "use the provider default" and is
+        # cleared rather than set, so it is admitted without a shape match.
+        if not isinstance(effort, str) or not (effort == "" or is_safe_effort_shape(effort)):
+            return web.json_response(
+                {
+                    "error": "reasoning_effort must be a short lowercase level name",
+                    "code": "invalid_reasoning_effort_shape",
+                },
+                status=400,
+            )
+        return await _apply_remote_pick(
+            request, state, slot, "reasoning_effort", {"reasoning_effort": effort}
+        )
     valid_efforts = get_reasoning_effort_values()
     if not isinstance(effort, str) or effort not in valid_efforts:
         return web.json_response(
@@ -7795,14 +7859,6 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 "error": f"reasoning_effort must be one of: {', '.join(sorted(valid_efforts - {''}))}"
             },
             status=400,
-        )
-    if slot.is_remote:
-        # Validated against the LOCAL level set above, which is safe because a
-        # bound session is version-gated to a peer running this same build — the
-        # levels are an enumeration in the code, not per-machine config. The peer
-        # re-validates regardless; this only keeps an obvious typo off the wire.
-        return await _apply_remote_pick(
-            request, state, slot, "reasoning_effort", {"reasoning_effort": effort}
         )
     # Same serialization + transactional ordering as the agent switch: the
     # awaits below yield the event loop, so the section runs under the slot's

@@ -193,6 +193,23 @@ def get_reasoning_effort_ordered() -> list[str]:
 _SAFE_EFFORT_RE = re.compile(r"[a-z][a-z0-9_-]{0,20}\Z")
 
 
+def is_safe_effort_shape(value: object) -> bool:
+    """Return whether *value* is shape-safe to carry as an effort level.
+
+    This is the check applied to every level ACP reports
+    (:func:`update_reasoning_effort_values`): the reported vocabulary is not
+    known in advance, so shape is what makes an unrecognised level safe to hold.
+    It is deliberately NOT a membership test — see :func:`is_valid_effort` for
+    the canonical five, and :data:`_reasoning_effort_values` for the levels this
+    process currently accepts on the read path.
+
+    Callers that must not impose THIS process's vocabulary on a level chosen
+    elsewhere use this instead of membership: a peer crew may legitimately run a
+    level no local ACP session has ever reported.
+    """
+    return isinstance(value, str) and bool(_SAFE_EFFORT_RE.match(value))
+
+
 def update_reasoning_effort_values(acp_levels: list[str]) -> None:
     """Update valid effort levels from ACP session config.
 
@@ -210,9 +227,7 @@ def update_reasoning_effort_values(acp_levels: list[str]) -> None:
     live provider is available.
     """
     global _reasoning_effort_values, _reasoning_effort_ordered
-    safe_levels = [
-        level for level in acp_levels if isinstance(level, str) and _SAFE_EFFORT_RE.match(level)
-    ]
+    safe_levels = [level for level in acp_levels if is_safe_effort_shape(level)]
     level_set = set(safe_levels)
     # Union-only: never drop a previously-valid level (persistence safety).
     merged = _reasoning_effort_values | set(_REASONING_EFFORT_FALLBACK) | level_set | {""}
@@ -234,6 +249,38 @@ def _validate_reasoning_effort(raw: object) -> str:
         return raw
     if raw:
         logger.warning("Discarding invalid persisted reasoning_effort: %r", raw)
+    return ""
+
+
+def _restore_reasoning_effort(raw: object, *, remote: bool) -> str:
+    """Return the effort level to restore onto a slot, or "" to drop it.
+
+    A slot bound to a remote crew owns its effort level on the PEER, whose
+    vocabulary this process cannot enumerate: ``_reasoning_effort_values`` grows
+    only from levels a LOCAL ACP session reported, so membership here discards a
+    level the peer legitimately runs and hands the picker back a blank box —
+    whose first pick forwards and overwrites the peer's live setting, the exact
+    corruption inheriting the level exists to prevent. Shape is what makes an
+    unenumerable level safe to hold (:func:`is_safe_effort_shape`), and it is
+    already the sole gate on every level ACP itself reports.
+
+    Relaxing membership HERE does not widen the local ``--effort`` boundary that
+    :func:`_validate_reasoning_effort` defends, for two independent reasons: the
+    local application site membership-checks the level itself before pushing it
+    (``providers.acp.AcpProvider.change_effort`` raises on a level outside
+    :func:`get_reasoning_effort_values`), and a slot carrying the remote marker
+    never dispatches a local turn at all — an incomplete binding is refused with
+    ``remote_binding_incomplete`` rather than run locally.
+
+    A LOCAL slot keeps the membership check unchanged: its level is meaningful
+    only in this process's vocabulary, so an unrecognised one is corruption.
+    """
+    if not remote:
+        return _validate_reasoning_effort(raw)
+    if isinstance(raw, str) and is_safe_effort_shape(raw):
+        return raw
+    if raw:
+        logger.warning("Discarding malformed persisted reasoning_effort: %r", raw)
     return ""
 
 
@@ -1062,7 +1109,12 @@ def _rehydrate_slot_from_history(
                     "Failed to resolve model for rehydrated slot %s", slot_name, exc_info=True
                 )
         if meta.get("reasoning_effort"):
-            slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+            # Keyed on the persisted MARKER, not on ``slot.executor``: the marker
+            # is restored further down (independently of its target fields), so
+            # the slot does not yet know it is remote at this line.
+            slot.reasoning_effort = _restore_reasoning_effort(
+                meta["reasoning_effort"], remote=meta.get("executor") == "remote"
+            )
         if meta.get("autocompact_pct") is not None:
             slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
         if meta.get("workspace"):
@@ -1632,7 +1684,9 @@ def _apply_recent_session(
         except Exception:
             logger.debug("Failed to resolve model for restored slot %s", slot_name, exc_info=True)
     if meta.get("reasoning_effort"):
-        slot.reasoning_effort = _validate_reasoning_effort(meta["reasoning_effort"])
+        slot.reasoning_effort = _restore_reasoning_effort(
+            meta["reasoning_effort"], remote=meta.get("executor") == "remote"
+        )
     if meta.get("autocompact_pct") is not None:
         slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
     if meta.get("workspace"):
