@@ -803,9 +803,13 @@ class TestStoreHire:
             assert roster[member_id]["template_version"] == "1.2.0"
             # Lineage names the copy's source by its DECLARED name, as the fork records it.
             assert roster[member_id]["template_origin"] == "triage"
-            # The pristine copy (BASE of a later merge) and the seeded briefing.
+            # The pristine copy (BASE of a later merge) -- under trust/, keyed by
+            # the member ID and stamped with its store generation -- and the
+            # seeded briefing.
             slug = members.slug_for_name(member_id)
-            pristine = json.loads(member_templates.pristine_copy_path(slug).read_text())
+            pristine = json.loads(member_templates.pristine_copy_path(member_id).read_text())
+            assert pristine["member"] == member_id
+            assert pristine["generation"] == row.memory_store
             assert pristine["template"] == f"{APP}/triage"
             assert pristine["version"] == "1.2.0"
             assert pristine["agent"]["prompt"] == "You triage incidents."

@@ -67,6 +67,7 @@ import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
+import RoleUpdatePanel from './RoleUpdatePanel'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
@@ -2562,6 +2563,12 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
+          {/* Role update + detach, for a member hired from a template: the
+              merge plan against the app as installed now, offered never
+              applied on its own (design step 4). */}
+          {active.template && (
+            <RoleUpdatePanel member={active} appLabel={templateAppLabel(active.template)} />
+          )}
           <div className="mt-3 flex flex-col gap-2 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
             <span>
               {activeMemory === 'global'
