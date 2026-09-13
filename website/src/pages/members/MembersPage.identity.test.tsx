@@ -20,6 +20,7 @@ vi.mock('../../api/client', () => ({
     defaultAgent: vi.fn(() => Promise.resolve({ default_agent: '' })),
     updateKirocrewAgent: vi.fn(() => Promise.resolve({ ok: true })),
     autonudgeList: vi.fn(() => Promise.resolve({ enabled: true, loops: [] })),
+    listApps: vi.fn(() => Promise.resolve([])),
   },
 }))
 
@@ -177,5 +178,38 @@ describe('MembersPage Source row reads the normalized source', () => {
   it('a package-installed member reads as from packages, never as created here', async () => {
     await renderPage([row('pkg-a', { source: 'package' })], '?member=pkg-a')
     expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('From packages')
+  })
+
+  it('a member hired from an app template names the app the way the hire picker did', async () => {
+    // The picker offered "Oncall pack"; the drawer must not answer "oncall-pack"
+    // for the same app (#10596 UX review). The template's agent and version stay.
+    vi.mocked(api.listApps).mockResolvedValue([
+      { name: 'oncall-pack', version: '1.2.0', enabled: true, manifest: { name: 'oncall-pack', version: '1.2.0', displayName: 'Oncall pack', description: '', author: '' } },
+    ] as never)
+    const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0' })
+    await renderPage([hired], '?member=Pager-triage')
+    await waitFor(() =>
+      expect(screen.getByTestId('member-config-provenance')).toHaveTextContent('Template triage from Oncall pack (v1.2.0)'),
+    )
+  })
+
+  it('falls back to the app id when the app is gone, with no notice', async () => {
+    vi.mocked(api.listApps).mockResolvedValue([] as never)
+    const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0' })
+    await renderPage([hired], '?member=Pager-triage')
+    expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('Template triage from oncall-pack (v1.2.0)')
+    expect(screen.queryByTestId('member-config-provenance-error')).toBeNull()
+  })
+
+  it('says so when the app list could not be read, instead of passing the id off as the name', async () => {
+    // The row still says something (the id); the failed read is an ErrorNotice
+    // with the agent hand-off, not a silent substitution.
+    vi.mocked(api.listApps).mockRejectedValue(new Error('boom'))
+    const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0' })
+    await renderPage([hired], '?member=Pager-triage')
+    expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('Template triage from oncall-pack (v1.2.0)')
+    const notice = await screen.findByTestId('member-config-provenance-error')
+    expect(notice).toHaveTextContent("The installed apps could not be read, so the template's app is shown by its id.")
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
   })
 })

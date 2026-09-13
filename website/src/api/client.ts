@@ -2306,6 +2306,11 @@ export interface MemberRosterRow {
    *  role" and offers the rename. True after the first rename, for a hire that
    *  took a typed name, and for every member created with a name of its own. */
   named_by_user?: boolean
+  /** Store provenance: the template (`<app>/<agent>`) and the app version the
+   *  member was hired at; '' for a hand-made or locally adopted member. The
+   *  drawer's Source row reads "Template <app>/<agent> (v<version>)". */
+  template?: string
+  template_version?: string
   /** Stable path-safe slug deriving the member dir and the slot key. */
   slug: string
   /** The pinned DM thread's slot key ('' until first open / unbound). */

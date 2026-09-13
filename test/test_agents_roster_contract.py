@@ -79,6 +79,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "starred",
         "legacy_key",
         "named_by_user",
+        # Template provenance renders on the Crew Members drawer (GET /api/members).
+        "template",
+        "template_version",
     }
 )
 

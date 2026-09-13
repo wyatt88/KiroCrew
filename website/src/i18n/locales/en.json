@@ -7090,7 +7090,9 @@
       "filter_source_builtin_description": "Crews that ship with {{productName}}",
       "filter_source_package_description": "Crews installed by capability packages",
       "member_count_filtered": "{{shown}} of {{count}} members",
-      "own_copy_of": "{{template}} — customized copy"
+      "own_copy_of": "{{template}} — customized copy",
+      "provenance_apps_error": "The installed apps could not be read, so the template's app is shown by its id.",
+      "provenance_store": "Template {{agent}} from {{app}} (v{{version}})"
     },
     "migrationPage": {
       "app_migration": "App Migration",

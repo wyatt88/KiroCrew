@@ -5622,7 +5622,8 @@
         "oncall_ops": "Plantão e operações",
         "other": "Outros",
         "productivity": "Produtividade",
-        "research_writing": "Pesquisa e escrita"
+        "research_writing": "Pesquisa e escrita",
+        "templates": "Modelos"
       },
       "categoryRail": {
         "add_source": "Adicionar fonte",
@@ -14918,7 +14919,9 @@
       "filter_source_package_description": "Crews instalados por pacotes de capacidades",
       "member_count_filtered": "{{shown}} de {{count}} membros",
       "setup_in_crew_manager": "Configurar memória privada",
-      "own_copy_of": "{{template}} — cópia personalizada"
+      "own_copy_of": "{{template}} — cópia personalizada",
+      "provenance_apps_error": "Não foi possível ler os apps instalados; o app do modelo é mostrado pelo id.",
+      "provenance_store": "Modelo {{agent}} de {{app}} (v{{version}})"
     }
   },
   "privacyDisclosure": {

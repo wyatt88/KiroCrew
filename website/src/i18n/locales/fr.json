@@ -5622,7 +5622,8 @@
         "oncall_ops": "Astreinte et exploitation",
         "other": "Autres",
         "productivity": "Productivité",
-        "research_writing": "Recherche et rédaction"
+        "research_writing": "Recherche et rédaction",
+        "templates": "Modèles"
       },
       "categoryRail": {
         "add_source": "Ajouter une source",
@@ -14919,7 +14920,9 @@
       "filter_source_package_description": "Crews installés par des packages de capacités",
       "member_count_filtered": "{{shown}} membres sur {{count}}",
       "setup_in_crew_manager": "Configurer la mémoire privée",
-      "own_copy_of": "{{template}} — copie personnalisée"
+      "own_copy_of": "{{template}} — copie personnalisée",
+      "provenance_apps_error": "Les apps installées n'ont pas pu être lues ; l'app du modèle est affichée par son id.",
+      "provenance_store": "Modèle {{agent}} de {{app}} (v{{version}})"
     }
   },
   "privacyDisclosure": {
