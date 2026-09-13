@@ -27,6 +27,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import urllib.error
 from types import SimpleNamespace
 from typing import Any
@@ -217,10 +218,14 @@ def _isolated_module_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> An
     with bmod._lock:
         bmod._processes.clear()
         bmod._allocated_ports.clear()
+        bmod._restart_attempts.clear()
+        bmod._lifecycle_generation.clear()
     yield
     with bmod._lock:
         bmod._processes.clear()
         bmod._allocated_ports.clear()
+        bmod._restart_attempts.clear()
+        bmod._lifecycle_generation.clear()
 
 
 @pytest.fixture()
@@ -648,6 +653,25 @@ class TestStartCoordination:
         assert "boomer" not in bmod._processes
         assert "boomer" not in bmod._allocated_ports
 
+    def test_failed_spawn_releases_boot_preclaimed_fixed_port(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure before `_claim_port` releases the boot-time reservation."""
+
+        fixed_port = bmod._MIN_PORT + 17
+        manifest = _manifest("server.py", port=str(fixed_port))
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: manifest)
+        monkeypatch.setattr(bmod, "_start_app_backend_body", lambda *_args: None)
+
+        bmod._preclaim_fixed_ports(["doomed"])
+        assert bmod._allocated_ports == {"doomed": fixed_port}
+        assert bmod._start_app_backend("doomed") is None
+
+        assert "doomed" not in bmod._processes
+        assert "doomed" not in bmod._allocated_ports
+        bmod._claim_port("later", fixed_port)
+        assert bmod._allocated_ports["later"] == fixed_port
+
 
 class TestAwaitInflightSpawn:
     def test_a_cleared_placeholder_resolves_to_none(self) -> None:
@@ -670,6 +694,338 @@ class TestAwaitInflightSpawn:
 
     def test_an_absent_entry_at_the_deadline_resolves_to_none(self) -> None:
         assert bmod._await_inflight_spawn("absent", timeout=0.0) is None
+
+
+class TestSpawnPublicationOwnership:
+    @pytest.mark.parametrize("port", ["auto", str(bmod._MIN_PORT)])
+    def test_spawn_retired_before_reservation_claims_no_port(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, port: str
+    ) -> None:
+        """Ownership validation and reservation are one atomic transition."""
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        retired = AppProcess(app_name="app", starting=True)
+        successor = AppProcess(app_name="app", starting=True)
+        with bmod._lock:
+            bmod._processes["app"] = successor
+
+        monkeypatch.setattr(
+            bmod,
+            "popen_limited",
+            lambda *_args, **_kwargs: pytest.fail("retired spawn reached Popen"),
+        )
+        owner_context = bmod._spawn_publication_owner.set(retired)
+        try:
+            assert bmod._start_app_backend_body("app", _manifest("server.py", port=port)) is None
+        finally:
+            bmod._spawn_publication_owner.reset(owner_context)
+
+        assert bmod._processes["app"] is successor
+        assert "app" not in bmod._allocated_ports
+
+    def test_retired_release_preserves_successor_claim_and_frees_its_port(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retired cleanup cannot touch a successor's slot or reservation."""
+
+        monkeypatch.setattr(bmod, "_MIN_PORT", 9100)
+        monkeypatch.setattr(bmod, "_MAX_PORT", 9102)
+        retired = AppProcess(app_name="app", starting=True)
+        successor = AppProcess(app_name="app", starting=True)
+        with bmod._lock:
+            bmod._processes["app"] = retired
+        owner_context = bmod._spawn_publication_owner.set(retired)
+        try:
+            retired_port = bmod._reserve_free_port("app")
+        finally:
+            bmod._spawn_publication_owner.reset(owner_context)
+        assert retired_port == 9100
+
+        with bmod._lock:
+            bmod._processes["app"] = successor
+            bmod._allocated_ports["app"] = 9101
+        bmod._clear_failed_spawn_state("app", retired)
+
+        assert bmod._processes["app"] is successor
+        assert bmod._allocated_ports["app"] == 9101
+        owner_context = bmod._spawn_publication_owner.set(successor)
+        try:
+            assert bmod._reserve_free_port("app") == retired_port
+        finally:
+            bmod._spawn_publication_owner.reset(owner_context)
+
+    def test_retired_cleanup_precedes_successor_reservation(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The lifecycle flock is released only after retired-state cleanup."""
+
+        monkeypatch.setattr(bmod, "_MIN_PORT", 9100)
+        monkeypatch.setattr(bmod, "_MAX_PORT", 9101)
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: _manifest("server.py"))
+        lifecycle_lock = threading.Lock()
+        flock_calls_lock = threading.Lock()
+        first_reserved = threading.Event()
+        release_first = threading.Event()
+        cleanup_complete = threading.Event()
+        successor_waiting = threading.Event()
+        successor_reserved = threading.Event()
+        body_calls = 0
+        flock_calls = 0
+        first_owner: list[AppProcess] = []
+        cleanup_before_successor: list[bool] = []
+
+        @bmod.contextlib.contextmanager
+        def _flock(_name: str) -> Any:
+            nonlocal flock_calls
+            with flock_calls_lock:
+                flock_calls += 1
+                call_number = flock_calls
+                if call_number == 2:
+                    successor_waiting.set()
+            with lifecycle_lock:
+                yield
+            if call_number == 1:
+                assert successor_reserved.wait(2)
+
+        def _body(name: str, _manifest: Any) -> AppProcess | None:
+            nonlocal body_calls
+            body_calls += 1
+            owner = bmod._spawn_publication_owner.get()
+            assert owner is not None
+            if body_calls == 1:
+                first_owner.append(owner)
+                assert bmod._reserve_free_port(name) == 9100
+                first_reserved.set()
+                assert release_first.wait(2)
+                return None
+            assert cleanup_complete.is_set()
+            port = bmod._reserve_free_port(name)
+            successor = AppProcess(app_name=name, port=port, pid=704, proc=_fake_proc(pid=704))
+            with bmod._lock:
+                bmod._processes[name] = successor
+                bmod._allocated_ports[name] = port
+            successor_reserved.set()
+            return successor
+
+        real_clear = bmod._clear_failed_spawn_state
+
+        def _clear(name: str, placeholder: AppProcess) -> None:
+            if first_owner and placeholder is first_owner[0]:
+                cleanup_before_successor.append(not successor_reserved.is_set())
+            real_clear(name, placeholder)
+            if first_owner and placeholder is first_owner[0]:
+                cleanup_complete.set()
+
+        monkeypatch.setattr(bmod, "app_backend_lifecycle_flock", _flock)
+        monkeypatch.setattr(bmod, "_start_app_backend_body", _body)
+        monkeypatch.setattr(bmod, "_clear_failed_spawn_state", _clear)
+        first_results: list[AppProcess | None] = []
+        successor_results: list[AppProcess | None] = []
+        errors: list[BaseException] = []
+
+        def _run(target: Any, results: list[AppProcess | None]) -> None:
+            try:
+                results.append(target("app"))
+            except BaseException as exc:
+                errors.append(exc)
+
+        first_thread = threading.Thread(target=_run, args=(bmod._start_app_backend, first_results))
+        first_thread.start()
+        assert first_reserved.wait(2)
+        assert bmod.stop_app_backend("app") is True
+
+        successor_thread = threading.Thread(
+            target=_run, args=(bmod.start_app_backend, successor_results)
+        )
+        successor_thread.start()
+        assert successor_waiting.wait(2)
+        release_first.set()
+        first_thread.join(2)
+        successor_thread.join(2)
+
+        assert not first_thread.is_alive()
+        assert not successor_thread.is_alive()
+        assert errors == []
+        assert first_results == [None]
+        assert len(successor_results) == 1
+        successor = successor_results[0]
+        assert successor is not None
+        assert cleanup_before_successor == [True]
+        assert bmod._processes["app"] is successor
+        assert bmod._allocated_ports["app"] == 9100
+
+    def test_restart_spawn_retired_by_stop_start_never_publishes_or_leaks(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A later public START owns publication and the retired child is reaped."""
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        manifest = _manifest("server.py")
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: manifest)
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_start_health_supervisor", lambda *_args: None)
+        monkeypatch.setattr(bmod, "_proc_start_time", lambda pid: f"start-{pid}")
+
+        old = AppProcess(
+            app_name="app",
+            port=9136,
+            pid=700,
+            proc=_fake_proc(pid=700, returncode=-15),
+        )
+        with bmod._lock:
+            bmod._processes["app"] = old
+            bmod._allocated_ports["app"] = old.port
+
+        spawned = [_FakeProc(pid=701), _FakeProc(pid=702)]
+        popen_calls: list[int] = []
+
+        def _popen(*_args: Any, **_kwargs: Any) -> _FakeProc:
+            proc = spawned[len(popen_calls)]
+            popen_calls.append(proc.pid)
+            return proc
+
+        monkeypatch.setattr(bmod, "popen_limited", _popen)
+
+        restart_child_spawned = threading.Event()
+        allow_restart_publication = threading.Event()
+
+        def _survived(proc: _FakeProc, _port: int | None = None) -> bool:
+            if proc.pid == 701:
+                restart_child_spawned.set()
+                assert allow_restart_publication.wait(2)
+            return True
+
+        monkeypatch.setattr(bmod, "_survived_spawn", _survived)
+
+        flock = threading.Lock()
+        flock_calls_lock = threading.Lock()
+        public_start_waiting = threading.Event()
+        flock_calls = 0
+
+        @bmod.contextlib.contextmanager
+        def _flock(_name: str) -> Any:
+            nonlocal flock_calls
+            with flock_calls_lock:
+                flock_calls += 1
+                if flock_calls == 2:
+                    public_start_waiting.set()
+            with flock:
+                yield
+
+        monkeypatch.setattr(bmod, "app_backend_lifecycle_flock", _flock)
+        kills: list[tuple[int, int]] = []
+        monkeypatch.setattr(
+            bmod.platform_compat,
+            "kill_process_tree",
+            lambda pid, sig: kills.append((pid, sig)),
+        )
+
+        restart_results: list[bool] = []
+        start_results: list[AppProcess | None] = []
+        errors: list[BaseException] = []
+
+        def _restart() -> None:
+            try:
+                restart_results.append(bmod._restart_exited_backend(old, -15))
+            except BaseException as exc:
+                errors.append(exc)
+
+        def _public_start() -> None:
+            try:
+                start_results.append(bmod.start_app_backend("app"))
+            except BaseException as exc:
+                errors.append(exc)
+
+        restart_thread = threading.Thread(target=_restart)
+        restart_thread.start()
+        assert restart_child_spawned.wait(2)
+        assert bmod.stop_app_backend("app") is True
+
+        start_thread = threading.Thread(target=_public_start)
+        start_thread.start()
+        assert public_start_waiting.wait(2)
+        allow_restart_publication.set()
+        restart_thread.join(2)
+        start_thread.join(2)
+
+        assert not restart_thread.is_alive()
+        assert not start_thread.is_alive()
+        assert errors == []
+        assert restart_results == [True]
+        assert len(start_results) == 1
+        successor = start_results[0]
+        assert successor is not None
+        assert successor.pid == 702
+        assert bmod._processes == {"app": successor}
+        assert popen_calls == [701, 702]
+        assert kills == [(701, bmod.platform_compat.SIGTERM)]
+        assert bmod._read_pidfile() == {
+            "app": {"pid": 702, "start_time": "start-702", "port": successor.port}
+        }
+
+    def test_restart_joins_a_public_start_already_in_flight(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The restart-side internal start awaits, rather than spawning a child."""
+
+        (spawn_root / "server.py").write_text("x = 1\n")
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: _manifest("server.py"))
+        monkeypatch.setattr(bmod, "_start_health_supervisor", lambda *_args: None)
+        child = _FakeProc(pid=703)
+        popen_calls: list[int] = []
+
+        def _popen(*_args: Any, **_kwargs: Any) -> _FakeProc:
+            popen_calls.append(child.pid)
+            return child
+
+        monkeypatch.setattr(bmod, "popen_limited", _popen)
+        child_spawned = threading.Event()
+        allow_publication = threading.Event()
+
+        def _survived(_proc: _FakeProc, _port: int | None = None) -> bool:
+            child_spawned.set()
+            assert allow_publication.wait(2)
+            return True
+
+        monkeypatch.setattr(bmod, "_survived_spawn", _survived)
+        await_called = threading.Event()
+        real_await = bmod._await_inflight_spawn
+
+        def _await(name: str, timeout: float = 20.0) -> AppProcess | None:
+            await_called.set()
+            return real_await(name, timeout)
+
+        monkeypatch.setattr(bmod, "_await_inflight_spawn", _await)
+        public_results: list[AppProcess | None] = []
+        restart_results: list[AppProcess | None] = []
+        errors: list[BaseException] = []
+
+        def _run(target: Any, results: list[AppProcess | None]) -> None:
+            try:
+                results.append(target("app"))
+            except BaseException as exc:
+                errors.append(exc)
+
+        public_thread = threading.Thread(target=_run, args=(bmod.start_app_backend, public_results))
+        public_thread.start()
+        assert child_spawned.wait(2)
+
+        restart_thread = threading.Thread(
+            target=_run, args=(bmod._start_app_backend, restart_results)
+        )
+        restart_thread.start()
+        assert await_called.wait(2)
+        allow_publication.set()
+        public_thread.join(2)
+        restart_thread.join(2)
+
+        assert not public_thread.is_alive()
+        assert not restart_thread.is_alive()
+        assert errors == []
+        assert len(public_results) == 1
+        assert restart_results == public_results
+        assert bmod._processes["app"] is public_results[0]
+        assert popen_calls == [703]
 
 
 # ---------------------------------------------------------------------------
@@ -3143,6 +3499,463 @@ class TestHealthCheckLoop:
             bmod._processes.get("racy") or bmod.AppProcess(app_name="racy", port=9135), "/health"
         )
         assert gate == []
+
+
+class TestRestartExitedBackend:
+    @pytest.fixture(autouse=True)
+    def _fast_backoff(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        delays: list[float] = []
+        monkeypatch.setattr(
+            bmod,
+            "shutdown_event",
+            SimpleNamespace(
+                is_set=lambda: False,
+                wait=lambda delay: delays.append(delay) or False,
+            ),
+        )
+        return delays
+
+    @staticmethod
+    def _track(name: str = "app") -> AppProcess:
+        ap = AppProcess(
+            app_name=name,
+            port=9136,
+            pid=617,
+            proc=_fake_proc(pid=617, returncode=-15),
+            healthy=False,
+            mcp_healthy=False,
+        )
+        with bmod._lock:
+            bmod._processes[name] = ap
+            bmod._allocated_ports[name] = ap.port
+        return ap
+
+    def test_an_exited_tracked_backend_restarts_through_start_path(
+        self, monkeypatch: pytest.MonkeyPatch, _fast_backoff: list[float]
+    ) -> None:
+        ap = self._track()
+        started: list[str] = []
+        replacement = AppProcess(app_name="app", port=9137, proc=_fake_proc(pid=618))
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+        monkeypatch.setattr(
+            bmod,
+            "_demote",
+            lambda record, reason: setattr(record, "mcp_healthy", False),
+        )
+
+        def _start(name: str) -> AppProcess:
+            started.append(name)
+            with bmod._lock:
+                bmod._processes[name] = replacement
+            return replacement
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _start)
+        bmod._watch_backend_health_sweeps(ap, "/health")
+        assert started == ["app"]
+        assert _fast_backoff[-1:] == [0.0]
+        assert bmod._processes["app"] is replacement
+
+    @pytest.mark.parametrize("enabled", [False, None])
+    def test_disabled_or_unknown_app_is_not_restarted(
+        self, monkeypatch: pytest.MonkeyPatch, enabled: bool | None
+    ) -> None:
+        ap = self._track()
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: enabled)
+        monkeypatch.setattr(
+            bmod,
+            "_start_app_backend",
+            lambda _name: pytest.fail("must not restart without confirmed enablement"),
+        )
+        assert bmod._restart_exited_backend(ap, -15) is False
+        assert bmod._processes["app"] is ap
+
+    def test_an_intentionally_dropped_record_is_not_restarted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        with bmod._lock:
+            bmod._processes.pop("app")
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(
+            bmod,
+            "_start_app_backend",
+            lambda _name: pytest.fail("must not restart a stopped record"),
+        )
+        assert bmod._restart_exited_backend(ap, -15) is False
+
+    def test_gateway_shutdown_prevents_restart(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        ap = self._track()
+        monkeypatch.setattr(bmod, "shutdown_event", SimpleNamespace(is_set=lambda: True))
+        monkeypatch.setattr(
+            bmod,
+            "_start_app_backend",
+            lambda _name: pytest.fail("must not restart during gateway shutdown"),
+        )
+        assert bmod._restart_exited_backend(ap, -15) is False
+
+    def test_ramp_exhaustion_enters_steady_state_and_warns_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ap = self._track()
+        started: list[str] = []
+        enabled = True
+        monkeypatch.setattr(bmod, "_RESTART_ON_EXIT_FAST_ATTEMPTS", 2)
+        monkeypatch.setattr(bmod, "_RESTART_STEADY_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: _manifest("server.py"))
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: enabled)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+
+        def _fail_until_disabled(name: str) -> None:
+            nonlocal enabled
+            started.append(name)
+            if len(started) == 5:
+                enabled = False
+            return None
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _fail_until_disabled)
+        with caplog.at_level(logging.WARNING):
+            assert bmod._restart_exited_backend(ap, -15) is False
+        assert started == ["app"] * 5
+        assert bmod._restart_attempts["app"] == 5
+        assert ap.restart_backoff is True
+        assert (
+            sum(
+                "still failing after 2 fast restart attempts" in record.message
+                for record in caplog.records
+            )
+            == 1
+        )
+
+    def test_shutdown_during_steady_wait_prevents_spawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        waits: list[float] = []
+        monkeypatch.setattr(bmod, "_RESTART_ON_EXIT_FAST_ATTEMPTS", 2)
+        monkeypatch.setattr(bmod, "_RESTART_STEADY_INTERVAL", 7)
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(
+            bmod,
+            "shutdown_event",
+            SimpleNamespace(
+                is_set=lambda: False,
+                wait=lambda delay: waits.append(delay) or True,
+            ),
+        )
+        monkeypatch.setattr(
+            bmod,
+            "_start_app_backend",
+            lambda _name: pytest.fail("shutdown must prevent the steady-state spawn"),
+        )
+        with bmod._lock:
+            bmod._restart_attempts["app"] = 2
+
+        assert bmod._restart_exited_backend(ap, -15) is False
+        assert waits == [7]
+        assert ap.restart_backoff is True
+
+    def test_successor_pid_record_survives_restart_handoff_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        ap.pid_start_time = "old-start"
+        bmod._write_pidfile(
+            {"app": {"pid": ap.pid, "start_time": ap.pid_start_time, "port": ap.port}}
+        )
+        successor = AppProcess(
+            app_name="app",
+            port=9137,
+            pid=618,
+            pid_start_time="new-start",
+            proc=_fake_proc(pid=618),
+        )
+        real_forget = bmod._forget_app_pid_if
+
+        def _race_successor_record(name: str, pid: int, start_time: str | None) -> None:
+            bmod._write_pidfile(
+                {name: {"pid": successor.pid, "start_time": successor.pid_start_time, "port": 9137}}
+            )
+            real_forget(name, pid, start_time)
+
+        def _start(name: str) -> AppProcess:
+            with bmod._lock:
+                bmod._processes[name] = successor
+            return successor
+
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", _race_successor_record)
+        monkeypatch.setattr(bmod, "_start_app_backend", _start)
+        assert bmod._restart_exited_backend(ap, -15) is True
+        assert bmod._read_pidfile()["app"] == {
+            "pid": 618,
+            "start_time": "new-start",
+            "port": 9137,
+        }
+
+    def test_a_stop_during_a_failed_spawn_prevents_restore_and_further_attempts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        started: list[str] = []
+        monkeypatch.setattr(bmod, "_RESTART_ON_EXIT_FAST_ATTEMPTS", 2)
+        monkeypatch.setattr(bmod, "_RESTART_STEADY_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: _manifest("server.py"))
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+        with bmod._lock:
+            bmod._restart_attempts["app"] = 2
+
+        def _fail_after_stop(name: str) -> None:
+            started.append(name)
+            assert bmod.stop_app_backend(name) is False
+            return None
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _fail_after_stop)
+        assert bmod._restart_exited_backend(ap, -15) is False
+        assert started == ["app"]
+        assert bmod._processes == {}
+        assert bmod._lifecycle_generation["app"][1] == bmod._LIFECYCLE_STOP
+
+    def test_a_stop_during_restart_publication_stops_the_replacement(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        replacement = AppProcess(app_name="app", port=9137, pid=618, proc=_fake_proc(pid=618))
+        stopped: list[tuple[int, int]] = []
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+        monkeypatch.setattr(
+            bmod.platform_compat,
+            "kill_process_tree",
+            lambda pid, signal: stopped.append((pid, signal)),
+        )
+
+        def _start(name: str) -> AppProcess:
+            # STOP lands after the old record was removed but before publication.
+            assert bmod.stop_app_backend(name) is False
+            with bmod._lock:
+                bmod._processes[name] = replacement
+            return replacement
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _start)
+        assert bmod._restart_exited_backend(ap, -15) is False
+        assert bmod._processes == {}
+        assert stopped == [(618, bmod.platform_compat.SIGTERM)]
+
+    def test_disable_then_quick_reenable_during_spawn_keeps_the_replacement(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        replacement = AppProcess(app_name="app", port=9137, pid=618, proc=_fake_proc(pid=618))
+        stopped: list[tuple[int, int]] = []
+        monkeypatch.setattr(bmod, "get_app_manifest", lambda _name: _manifest("server.py"))
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+        monkeypatch.setattr(
+            bmod.platform_compat,
+            "kill_process_tree",
+            lambda pid, signal: stopped.append((pid, signal)),
+        )
+
+        def _enabled_start(name: str) -> AppProcess:
+            with bmod._lock:
+                bmod._processes[name] = replacement
+            return replacement
+
+        def _restart_start(name: str) -> AppProcess:
+            # Disable records STOP while the restart owns the spawn. The immediate
+            # public start records a later START and reuses/publishes the replacement.
+            assert bmod.stop_app_backend(name) is False
+            monkeypatch.setattr(bmod, "_start_app_backend", _enabled_start)
+            assert bmod.start_app_backend(name) is replacement
+            return replacement
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _restart_start)
+        assert bmod._restart_exited_backend(ap, -15) is True
+        assert bmod._processes["app"] is replacement
+        assert bmod._lifecycle_generation["app"][1] == bmod._LIFECYCLE_START
+        assert stopped == []
+
+    def test_startup_health_gate_exit_continues_the_restart_sequence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        started: list[str] = []
+        replacement = AppProcess(
+            app_name="app",
+            port=9137,
+            pid=618,
+            proc=_fake_proc(pid=618),
+        )
+        with bmod._lock:
+            bmod._restart_attempts["app"] = 1
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+        monkeypatch.setattr(bmod, "_health_check_loop", lambda *_args: None)
+
+        def _start(name: str) -> AppProcess:
+            started.append(name)
+            with bmod._lock:
+                bmod._processes[name] = replacement
+            return replacement
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _start)
+        bmod._supervise_backend_health(ap, "/health")
+        assert started == ["app"]
+        assert bmod._restart_attempts["app"] == 2
+        assert bmod._processes["app"] is replacement
+
+    def test_startup_exit_retries_an_unlanded_scrub_before_restarting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = self._track()
+        ap.mcp_healthy = None
+        restarted: list[str] = []
+        replacement = AppProcess(app_name="app", port=9137, pid=618, proc=_fake_proc(pid=618))
+        gate_calls = 0
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_health_check_loop", lambda *_args: None)
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+
+        def _gate(*_args: Any, **_kwargs: Any) -> bool:
+            nonlocal gate_calls
+            gate_calls += 1
+            return gate_calls == 2
+
+        def _start(name: str) -> AppProcess:
+            restarted.append(name)
+            with bmod._lock:
+                bmod._processes[name] = replacement
+            return replacement
+
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
+        monkeypatch.setattr(bmod, "_start_app_backend", _start)
+        bmod._supervise_backend_health(ap, "/health")
+        assert gate_calls == 2
+        assert restarted == ["app"]
+        assert bmod._processes["app"] is replacement
+
+    def test_startup_health_gate_exhaustion_warns_once_across_generations(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ap = self._track()
+        replacement = AppProcess(
+            app_name="app",
+            port=9137,
+            pid=618,
+            proc=_fake_proc(pid=618, returncode=-15),
+            mcp_healthy=False,
+        )
+        starts: list[str] = []
+        monkeypatch.setattr(bmod, "_RESTART_ON_EXIT_FAST_ATTEMPTS", 1)
+        monkeypatch.setattr(bmod, "_RESTART_STEADY_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+        monkeypatch.setattr(bmod, "_health_check_loop", lambda *_args: None)
+
+        def _start(name: str) -> AppProcess:
+            starts.append(name)
+            with bmod._lock:
+                bmod._processes[name] = replacement
+            return replacement
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _start)
+        with caplog.at_level(logging.WARNING):
+            assert bmod._restart_exited_backend(ap, -15) is True
+            bmod._supervise_backend_health(replacement, "/health")
+        assert starts == ["app", "app"]
+        assert (
+            sum(
+                "still failing after 1 fast restart attempts" in record.message
+                for record in caplog.records
+            )
+            == 1
+        )
+
+    def test_health_gate_keeps_the_restart_attempt_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ap = AppProcess(app_name="app", port=9138, proc=_fake_proc(pid=619), healthy=False)
+        with bmod._lock:
+            bmod._processes["app"] = ap
+            bmod._restart_attempts["app"] = 2
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", lambda *_a, **_kw: True)
+        assert bmod._set_backend_health(ap, healthy=True) is True
+        assert bmod._restart_attempts["app"] == 2
+
+    def test_sustained_health_resets_the_restart_attempt_count(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ap = AppProcess(
+            app_name="app",
+            port=9138,
+            proc=_fake_proc(pid=619),
+            healthy=True,
+            mcp_healthy=True,
+        )
+        sweeps = 0
+        with bmod._lock:
+            bmod._processes["app"] = ap
+            bmod._restart_attempts["app"] = 2
+        monkeypatch.setattr(bmod, "_health_probe", lambda *_args: True)
+
+        def _sleep(_delay: float) -> None:
+            nonlocal sweeps
+            sweeps += 1
+            if sweeps > bmod._RESTART_STABLE_SWEEPS:
+                with bmod._lock:
+                    bmod._processes.pop("app", None)
+
+        monkeypatch.setattr(bmod.time, "sleep", _sleep)
+        with caplog.at_level(logging.INFO):
+            bmod._watch_backend_health_sweeps(ap, "/health")
+        assert sweeps == bmod._RESTART_STABLE_SWEEPS + 1
+        assert "app" not in bmod._restart_attempts
+        assert sum("backend recovered after restart" in r.message for r in caplog.records) == 1
+
+    def test_steady_state_success_publishes_and_clears_backoff(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        ap = self._track()
+        replacement = AppProcess(
+            app_name="app",
+            port=9137,
+            pid=618,
+            proc=_fake_proc(pid=618),
+            restart_backoff=True,
+        )
+        monkeypatch.setattr(bmod, "_RESTART_ON_EXIT_FAST_ATTEMPTS", 2)
+        monkeypatch.setattr(bmod, "_RESTART_STEADY_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(bmod, "_forget_app_pid_if", lambda *_args: None)
+
+        def _start(name: str) -> AppProcess:
+            with bmod._lock:
+                bmod._processes[name] = replacement
+            return replacement
+
+        monkeypatch.setattr(bmod, "_start_app_backend", _start)
+        with bmod._lock:
+            bmod._restart_attempts["app"] = 2
+        with caplog.at_level(logging.WARNING):
+            assert bmod._restart_exited_backend(ap, -15) is True
+        assert ap.restart_backoff is True
+        assert replacement.restart_backoff is False
+        assert bmod._processes["app"] is replacement
+        assert bmod._restart_attempts["app"] == 3
+        assert (
+            sum(
+                "still failing after 2 fast restart attempts" in record.message
+                for record in caplog.records
+            )
+            == 1
+        )
 
 
 # ---------------------------------------------------------------------------

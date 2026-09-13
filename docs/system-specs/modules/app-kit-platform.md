@@ -1595,6 +1595,26 @@ are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
   recover on its own, so one observation demotes it and the watch stops. An
   **adopted** backend has no `Popen` handle — it belongs to another supervisor —
   and is judged by its health endpoint alone.
+- **An unexpected spawned-process exit is restarted, but never blindly.** After
+  the dead generation's MCP scrub has landed, the supervisor reuses
+  `start_app_backend` so its replacement follows the normal pidfile, health-gate,
+  and MCP-promotion path. It restarts only while the exact record remains tracked,
+  the app is positively enabled (unknown fails closed), and the process-wide gateway
+  shutdown signal is clear; adopted instances are excluded. The first replacement
+  attempt is immediate; subsequent failures back off 1s, 2s, 4s … to 30s and stop
+  after eight attempts (0+1+2+4+8+16+30+30 seconds, a 91-second window) with a warning
+  to disable and re-enable the app. This covers a per-user service-manager restart
+  lasting about 45 seconds with margin. A replacement resets that budget only after four consecutive
+  healthy liveness sweeps (about 60 seconds), so a process that passes its startup gate
+  and then repeatedly exits still reaches the cap. Every deliberate stop and every
+  explicit external start advances a per-app lifecycle generation; the restart's own
+  spawn does not. The restart snapshots that generation when it removes the dead record:
+  a later STOP tears down its exact replacement, while a later START adopts/reuses the
+  replacement and supersedes the stale stop. PID-file cleanup is likewise conditional on
+  the exited process's exact `(pid, start_time)` identity, so it cannot erase a successor
+  recorded under the same app name. A failed spawn and a spawn that raises follow the
+  same restore/backoff path. An exit during the startup health gate continues the same
+  retry budget rather than stranding the enabled app.
 - **An HTTP failure from a live process is not decisive.** A backend can be
   briefly busy, so demotion needs `_HEALTH_WATCH_FAILURES` consecutive misses;
   demoting on a single miss would let one slow response take a working app
@@ -1787,6 +1807,17 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   is reconciled or the record is dropped. That path is the one place where giving up is
   permanent — nothing revisits an exited backend — so returning on an unlanded scrub
   would strand the dead URL for kiro-cli to dial on every session.
+- **An enabled app is restarted until it recovers or is disabled.** An exited spawned
+  backend first gets the fast ramp (immediate, 1, 2, 4, 8, 16, 30, and 30 seconds), then
+  moves to one attempt every 300 seconds for as long as the app stays positively enabled.
+  The transition is warned once and marked on the tracked `AppProcess`; publishing or
+  promoting a replacement clears that marker. There is deliberately no terminal
+  give-up state: like systemd's `Restart=always`, an enabled service must not remain dead
+  waiting for a human to notice it. Persistent failures are bounded to the slow cadence,
+  and `_restart_attempts` resets only after `_RESTART_STABLE_SWEEPS` healthy checks, so a
+  post-gate flapper cannot regain the fast ramp merely by surviving startup briefly.
+  Every wait is shutdown-aware, and every ramp or steady-state iteration repeats the
+  record identity, enablement, lifecycle-generation, and post-spawn ownership guards.
 - **The startup poll belongs to ONE generation, bound at the spawn.** The supervisor is
   handed the `AppProcess` itself and derives both name and port from it; every attempt
   re-checks that the record is still the tracked one. A name plus a port are two
