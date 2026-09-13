@@ -154,11 +154,20 @@ const PARSER_PARITY_FIXTURES: [string, string, [number, string, string, string][
   ['unterminated widget is still emitted', '<mcwidget title="Open">\n<div>never closed', [[0, '<div>never closed', 'Open', '']]],
   ['a documented example does not shift the real widget index', 'Example: `<mcwidget>demo</mcwidget>`\n<mcwidget title="Real">body</mcwidget>', [[0, 'body', 'Real', '']]],
   ['text after the close tag is not swallowed', '<mcwidget title="A">x</mcwidget> trailing prose', [[0, 'x', 'A', '']]],
-  // REGRESSION (cross-language): JS \\w is ASCII-only, Python's is Unicode-aware.
-  // A non-ASCII fence info string must NOT be treated as a fence, or the two
-  // parsers return DIFFERENT widgets at index 0 — same derived slug, different
-  // content, so the frontend links/pins an artifact the user never starred.
-  ['non-ASCII fence info string is not a fence', '\u4ee5\u4e0b\u306e\u3088\u3046\u306b\u66f8\u304d\u307e\u3059:\n```\u4f8b\n<mcwidget title="\u30b5\u30f3\u30d7\u30eb">demo</mcwidget>\n```\n\u5b9f\u969b\u306e\u7d50\u679c:\n<mcwidget title="\u30b0\u30e9\u30d5">REAL-CHART</mcwidget>', [[0, 'demo', '\u30b5\u30f3\u30d7\u30eb', '']]],
+  // Cross-language parity on a non-ASCII info string. Both parsers apply the
+  // CommonMark rule (any non-backtick info string opens a fence), so ```例 is a
+  // fence on BOTH sides: the example inside it is inert code and the real
+  // widget is index 0. If either side regressed to its own `\w` (JS ASCII-only,
+  // Python Unicode-aware) they would return DIFFERENT widgets at index 0 — same
+  // derived slug, different content — and the frontend would link/pin an
+  // artifact the user never starred. test_widget_parse.py holds the twin.
+  ['non-ASCII fence info string is a fence on both sides', '\u4ee5\u4e0b\u306e\u3088\u3046\u306b\u66f8\u304d\u307e\u3059:\n```\u4f8b\n<mcwidget title="\u30b5\u30f3\u30d7\u30eb">demo</mcwidget>\n```\n\u5b9f\u969b\u306e\u7d50\u679c:\n<mcwidget title="\u30b0\u30e9\u30d5">REAL-CHART</mcwidget>', [[0, 'REAL-CHART', '\u30b0\u30e9\u30d5', '']]],
+  // Punctuated / hyphenated / attributed info strings are fences too, so the
+  // widget that follows them is index 0 on both sides.
+  ['hyphenated fence info string is a fence on both sides', '```error-report\n<mcwidget title="Inert">in code</mcwidget>\n```\n<mcwidget title="Real">out</mcwidget>', [[0, 'out', 'Real', '']]],
+  ['leading whitespace before the tag keeps the tag on both sides', '``` python\n```js\n<mcwidget title="Inert">in code</mcwidget>\n```\n<mcwidget title="Real">out</mcwidget>', [[0, 'out', 'Real', '']]],
+  ['attributed fence info string is a fence on both sides', '```js {1,3}\n<mcwidget title="Inert">in code</mcwidget>\n```\n<mcwidget title="Real">out</mcwidget>', [[0, 'out', 'Real', '']]],
+  ['a backtick in the info string is not a fence on either side', '``` `x`\n<mcwidget title="Real">first</mcwidget>\nprose\n<mcwidget title="Second">second</mcwidget>', [[0, 'first', 'Real', ''], [1, 'second', 'Second', '']]],
   ['content before the close tag on the closing line is kept', '<mcwidget title="A">\n<div>one</div>\n<div>two</div></mcwidget>', [[0, '<div>one</div>\n<div>two</div>', 'A', '']]],
   // Nested-fence depth (fenceNestable / innerFenceDepth). A miscount ends the
   // outer fence early and promotes an inert code-block <mcwidget> to a real

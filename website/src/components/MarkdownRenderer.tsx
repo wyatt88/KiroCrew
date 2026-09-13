@@ -1804,7 +1804,12 @@ const MD_COMPONENTS: Components = {
     const { 'data-fenced': fenced, ...rest } = props as Record<string, unknown>
     if (fenced === undefined) return <InlineCode {...rest}>{children}</InlineCode>
 
-    const match = /language-(\w+)/.exec(className || '')
+    // remark-rehype stamps `language-<first word of the info string>`; keep the
+    // whole tag (`error-report`, `c++`, `asp.net`), not just its leading `\w+`
+    // run, so the header label and highlighter hint match what the author
+    // wrote. A class token has no whitespace, so `\S+` is the whole tag. Same
+    // rule as FENCE_OPEN (useBlockAssembler) / fixCodeFences.
+    const match = /language-(\S+)/.exec(className || '')
     const lang = match?.[1]
     const codeStr = String(children).replace(/\n$/, '')
 
@@ -3830,13 +3835,18 @@ export function fixCodeFences(s: string): string {
     if (inFence || num === undefined) return match
     return num + '\\.' + trail
   })
-  // Ensure blank line before opening fences that are glued to preceding text
-  s = s.replace(/([^\n])(\n?)(```\w*\n)/g, (_, pre, nl, fence) =>
+  // Ensure blank line before opening fences that are glued to preceding text.
+  // The tag is any non-space, non-backtick run (CommonMark info string), the
+  // same rule FENCE_OPEN in useBlockAssembler applies.
+  s = s.replace(/([^\n])(\n?)(```[^`\s]*\n)/g, (_, pre, nl, fence) =>
     nl ? pre + nl + fence : pre + '\n\n' + fence
   )
   // Split closing fences glued to trailing text: ```358KB → ```\n358KB
-  // Preserves valid opening fences (```diff, ```json5, ```c++) via negative lookahead
-  s = s.replace(/^(```)(?![a-zA-Z][\w+#-]*\s*$)(.+)$/gm, '$1\n$2')
+  // Preserves valid opening fences (```diff, ``` python, ```c++, ```asp.net)
+  // via negative lookahead: optional info-string whitespace may precede a tag
+  // that starts with a letter and runs to the next space or backtick, while a
+  // size like ```358KB still splits.
+  s = s.replace(/^(```)(?!\s*[a-zA-Z][^`\s]*\s*$)(.+)$/gm, '$1\n$2')
   // Split opening fences glued to uppercase text
   s = s.replace(/```([A-Z])/g, '```\n$1')
   return s

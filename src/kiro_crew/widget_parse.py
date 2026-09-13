@@ -39,7 +39,7 @@ import re
 from dataclasses import dataclass
 from typing import List
 
-# ── Character classes: ASCII-only, ON PURPOSE ────────────────────────────────
+# ── Character classes: mirror the frontend EXACTLY ──────────────────────────
 #
 # The frontend regexes these mirror use JS `\w` and `\s`, which are ASCII-only
 # (`\w` == [A-Za-z0-9_]). Python's `\w`/`\s` are UNICODE-aware, so writing the
@@ -47,18 +47,27 @@ from typing import List
 # input — and because a widget's artifact slug is keyed by its INDEX, a
 # disagreement doesn't just misparse, it binds the wrong artifact to the widget.
 #
-# Concrete case this prevents: an agent answering in Japanese writes a fenced
-# example with a non-ASCII info string (```例) and then emits the real widget.
-# With Unicode `\w`, Python sees a fence (so the example is inert code) and
-# returns the REAL widget at index 0, while JS sees plain markdown (so the
-# example IS a widget) and returns the EXAMPLE at index 0. Same slug, different
-# content: the frontend then links/pins an artifact holding HTML from a widget
-# the user never touched.
+# The fence-open rule is the CommonMark one, on both sides: the info string is
+# anything after the backtick run that contains no backtick, and the tag is its
+# first run of non-space characters. `FENCE_OPEN` in ``useBlockAssembler.ts``
+# spells it `[^`\s]*` + `[^`]*`; here JS `\s` is spelled out as ``_JS_SPACE``
+# (`\s` diverges in BOTH directions — Python matches U+001C-U+001F and U+0085,
+# which JS does not; JS matches U+FEFF, which Python does not). So a fence
+# tagged ```例, ```error-report or ```c++ opens on both sides, and a fence line
+# ending in one of those characters closes on both sides.
 #
-# `\s` diverges in BOTH directions (Python matches U+001C-U+001F and U+0085,
-# which JS does not; JS matches U+FEFF, which Python does not), so it is spelled
-# out as an explicit class mirroring the ECMAScript definition. A fence line
-# ending in one of those characters would otherwise close on one side only.
+# Which lines count as a fence decides widget INDICES. A message that has a
+# widget inside a fence tagged ```c++, ```js {1,3} or ```例, followed by a real
+# widget, indexes the real widget at 0 under this rule and at 1 under a `\w`
+# rule. Slugs are derived once, at emission (chat_runner registers
+# ``derive_widget_slug(message_ts, index)``), and are not re-derived for
+# history on the backend; the frontend re-derives on every render and probes
+# the artifact store by that slug. For such a message stored under the `\w`
+# rule, the probe therefore misses (star shows unsaved) and a save creates a
+# fresh artifact under the current index, while the stored artifact stays
+# intact in the library. That shift is a one-time cost of one shared rule,
+# accepted over carrying two parsers; widgets emitted under this rule are
+# stable.
 #
 # Keep every class here ASCII-literal / explicit; do NOT "simplify" back to
 # `\w`/`\s` — they look right and are wrong.
@@ -68,6 +77,8 @@ _JS_SPACE = (
     "[\\f\\n\\r\\t\\v\\u0020\\u00a0\\u1680\\u2000-\\u200a"
     "\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]"
 )
+#: One info-string tag character: not a backtick, not ECMAScript whitespace.
+_FENCE_TAG_CHAR = "[^`" + _JS_SPACE[1:]
 
 #: The exact character set JS ``String.prototype.trim`` removes. Differs from
 #: Python's ``str.strip()`` in both directions — most visibly U+FEFF, which JS
@@ -91,7 +102,10 @@ def _js_trim(s: str) -> str:
 _WIDGET_OPEN_RE = re.compile(rf'<mcwidget((?:{_JS_SPACE}+{_ASCII_WORD}+="[^"]*")*){_JS_SPACE}*>')
 _WIDGET_ATTR_RE = re.compile(rf'({_ASCII_WORD}+)="([^"]*)"')
 _WIDGET_CLOSE_RE = re.compile(r"</mcwidget>")
-_FENCE_OPEN_RE = re.compile(rf"^(`{{3,}})({_ASCII_WORD}*){_JS_SPACE}*$")
+#: Mirrors ``FENCE_OPEN`` in ``useBlockAssembler.ts``: leading info-string
+#: whitespace is skipped, group 2 is the tag (first non-space, non-backtick
+#: run), and the rest of the info string may be anything but a backtick.
+_FENCE_OPEN_RE = re.compile(rf"^(`{{3,}}){_JS_SPACE}*({_FENCE_TAG_CHAR}*)[^`]*$")
 
 #: Fence languages where a nested fence example is expected. Mirrors
 #: ``NESTABLE_LANGS`` in ``useBlockAssembler.ts``.
