@@ -1,14 +1,38 @@
-"""Gateway restart and make-live orchestration for Dev Fleet."""
+"""Gateway restart and make-live orchestration for Dev Fleet.
+
+Two processes share this module, and the split between them is the security
+boundary this module exists to respect:
+
+* The **gateway process** owns the live-target pointer (``service/live_target.py``).
+  ``_make_live`` and ``_restart_gateway`` run THERE, behind Dev Fleet's in-gateway
+  routes (``gateway_routes.py``), authorised by the dashboard owner's own request.
+* The **sandboxed backend** (``server.py``) never touches the pointer file: the OS
+  mask over ``live_target.json`` applies to it and to every child it spawns — a
+  worktree's ``npm ci`` lifecycle scripts run in the backend's namespace, so any
+  file the backend could write, a checkout under build could write too. The
+  backend READS pointer state through the gateway instead, via the provider
+  installed by :func:`install_pointer_provider`.
+
+Every pointer-derived read the BACKEND makes (``_live_worktree_path``,
+``_staged_target_resolved``, ``_staged_cancel_available``) therefore goes through
+the provider when one is installed, and answers locally otherwise. ``_staged_target``
+itself stays the gateway's synchronous file read: ``_make_live`` — which refuses to
+run under a provider at all — uses it under its lock.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
+import secrets
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import AsyncIterator, Awaitable, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository, runtime
@@ -16,6 +40,358 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.instances import run_marker
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.service import live_target
+
+
+@dataclass(frozen=True)
+class PointerState:
+    """What the live-target pointer says, resolved against the running gateway.
+
+    ``live`` is the checkout the gateway is RUNNING from (or ``None``), ``staged`` the
+    pointer target when a cutover is written but not yet in effect, and
+    ``staged_cancel_available`` whether the pointer-only cancel of that stage would be
+    accepted on this host. One value object rather than three calls so a backend
+    fetching it over the broker pays one round trip and cannot see a torn view.
+    """
+
+    live: str | None
+    staged: str | None
+    staged_cancel_available: bool
+
+
+class PointerUnavailable(RuntimeError):
+    """The pointer state could not be established (the broker did not answer).
+
+    Raised — never swallowed into ``None`` — because ``None`` means "nothing is live /
+    nothing is staged", and a prune that read that from a broker outage would delete
+    the very worktree a cutover is staged on. Callers decide how to degrade: the
+    fleet view reports the outage, destructive paths refuse.
+    """
+
+
+PointerProvider = Callable[[bool], Awaitable[PointerState]]
+
+#: ``None`` in the gateway (answer locally); the backend installs its broker client.
+_POINTER_PROVIDER: PointerProvider | None = None
+
+
+def install_pointer_provider(provider: PointerProvider | None) -> None:
+    """Route every pointer-derived read through *provider* (``None`` restores local).
+
+    Called once by ``server.main()`` — the one place that knows it is the sandboxed
+    backend — with a client for the gateway's ``GET /api/apps/dev-fleet/live-target``.
+    """
+    global _POINTER_PROVIDER
+    _POINTER_PROVIDER = provider
+
+
+async def pointer_state(*, fresh: bool = False) -> PointerState:
+    """The pointer state this process is entitled to: local in the gateway, brokered
+    in the backend. ``fresh`` bypasses display caches on both sides.
+
+    The gateway-local ``_staged_target`` reads and validates the pointer file and
+    resolves paths — synchronous filesystem work — so it runs on the executor; the
+    gateway's other requests must not wait behind a slow data home.
+    """
+    if _POINTER_PROVIDER is not None:
+        return await _POINTER_PROVIDER(fresh)
+    loop = asyncio.get_running_loop()
+    live_path = await _live_worktree_path(fresh=fresh)
+    staged = await loop.run_in_executor(subprocess_executor(), _staged_target)
+    # The cancel-availability probe reaches the service manager (a subprocess). The
+    # fleet endpoint that consumes this is polled, so it is only paid while a stage
+    # exists — with none, the control it gates cannot render and the answer is False.
+    cancel = await _staged_cancel_available() if staged is not None else False
+    return PointerState(live=live_path, staged=staged, staged_cancel_available=cancel)
+
+
+# --- cutover / removal exclusion across the two processes ---
+#: ``_MAKE_LIVE_LOCK`` below is an asyncio lock and so serialises only within one
+#: process. Since the cutover runs in the gateway and a worktree removal runs in the
+#: backend, the TOCTOU a single lock closes ("stage this worktree between the removal's
+#: live-check and its ``git worktree remove``", and "restart the gateway — tree-killing
+#: the backend — mid-removal") needs exclusion both processes see.
+#:
+#: NOT a lock file. A file in the crew data home is replaceable by any same-uid process
+#: in the backend's namespace (its build children included): unlink-and-recreate the leaf
+#: while one side holds the old inode and the other side locks the new one, and the two
+#: stop excluding each other. The state lives in the GATEWAY's memory instead — the
+#: process that already owns the cutover — as REMOVAL LEASES.
+#:
+#: A lease is a CAPABILITY, not a path claim: acquisition returns an unguessable token,
+#: and renewal and release must present it. The Dev Fleet app credential the backend
+#: uses to reach the gateway is readable by the build children in its namespace, so a
+#: path-only release would let any of them cancel a removal's lease from under it; the
+#: token is minted by the gateway and travels only in the lease reply, so a child that
+#: never saw it cannot forge a release. It can still ACQUIRE leases of its own — and so
+#: delay a cutover or a restart, which the same child could already cause by running
+#: ``git worktree remove`` itself — so the exposure it keeps is delay, not escalation.
+#:
+#: A lease is short-lived and RENEWED by its holder for as long as the removal runs
+#: (``removal_lease`` heartbeats at a third of the TTL, through ``_GIT_MUTATION_LOCK``
+#: queueing and the ``git worktree remove`` itself); a forgotten lease therefore expires
+#: on its own, while a live one never lapses mid-removal. The gateway refuses a NEW lease
+#: while a cutover is in flight, and ``_make_live`` / ``_restart_gateway`` refuse ``busy``
+#: while any lease is live.
+_REMOVAL_LEASE_TTL_SECS = 30.0
+_REMOVAL_LEASE_RENEW_SECS = _REMOVAL_LEASE_TTL_SECS / 3
+#: How long a LAPSED lease (expired without release) keeps blocking cutovers and restarts.
+#: A lease lapses only when its holder stopped heartbeating — the backend died, or the
+#: gateway forgot it and refused renewal — and the holder may be inside its
+#: uninterruptible ``git worktree remove`` (``worktree_ops``, 60 s timeout) with no way
+#: to be told. Renewal is refused the moment the TTL passes (so a live holder learns the
+#: lease is lost and never STARTS a new mutation), but the barrier itself outlives the
+#: TTL by the mutation's timeout plus margin, so a mutation already under way cannot be
+#: overlapped by a cutover or a restart. Only an explicit release ends it early.
+_REMOVAL_LEASE_GRACE_SECS = 90.0
+
+
+@dataclass
+class _RemovalLease:
+    path: str
+    token: str
+    expires_at: float
+
+    def blocks_until(self) -> float:
+        return self.expires_at + _REMOVAL_LEASE_GRACE_SECS
+
+
+#: token -> lease. Gateway-process state.
+_REMOVAL_LEASES: dict[str, _RemovalLease] = {}
+
+
+def _sweep_removal_leases(now: float | None = None) -> float:
+    """Drop leases whose grace barrier has passed; return *now* (gateway-local)."""
+    now = time.monotonic() if now is None else now
+    for token, lease in list(_REMOVAL_LEASES.items()):
+        if lease.blocks_until() <= now:
+            del _REMOVAL_LEASES[token]
+    return now
+
+
+def _renewable_removal_lease(token: str) -> _RemovalLease | None:
+    """The lease *token* names, if it is still within its TTL (renewable)."""
+    now = _sweep_removal_leases()
+    lease = _REMOVAL_LEASES.get(token)
+    if lease is None or lease.expires_at <= now:
+        return None
+    return lease
+
+
+def acquire_removal_lease(path: str, *, check_cutover: bool = True) -> str | None:
+    """Gateway-local: lease *path* for a removal; returns the capability, or ``None``.
+
+    Refused while ``_MAKE_LIVE_LOCK`` is held or a cutover has committed: a removal
+    that started under a staging write could delete the target being staged.
+    ``check_cutover=False`` is for a caller that HOLDS ``_MAKE_LIVE_LOCK`` itself (an
+    in-process removal): the lock is what excludes cutovers there, so re-checking it
+    would refuse the very holder.
+    """
+    if check_cutover and (_MAKE_LIVE_LOCK.locked() or _MAKE_LIVE_COMMITTED):
+        return None
+    now = _sweep_removal_leases()
+    token = secrets.token_urlsafe(24)
+    _REMOVAL_LEASES[token] = _RemovalLease(
+        path=path, token=token, expires_at=now + _REMOVAL_LEASE_TTL_SECS
+    )
+    return token
+
+
+def renew_removal_lease(token: str) -> bool:
+    """Gateway-local: extend the lease *token* names. ``False`` once its TTL has passed —
+    even inside the grace barrier, so a holder that fell behind learns the lease is lost
+    rather than silently resuming on a barrier that is about to end."""
+    lease = _renewable_removal_lease(token)
+    if lease is None:
+        return False
+    lease.expires_at = time.monotonic() + _REMOVAL_LEASE_TTL_SECS
+    return True
+
+
+def release_removal_lease(token: str) -> None:
+    """Gateway-local: end the lease *token* names (idempotent; a wrong token is a no-op)."""
+    _REMOVAL_LEASES.pop(token, None)
+
+
+def removal_in_progress() -> bool:
+    """Gateway-local: whether any removal is (or may still be) under way — a live lease
+    OR a lapsed one inside its grace barrier.
+
+    Any worktree, deliberately: a cutover restarts the whole gateway and a restart
+    tree-kills the backend, so a removal of ANY worktree must exclude them both.
+    """
+    _sweep_removal_leases()
+    return bool(_REMOVAL_LEASES)
+
+
+#: The backend's end of the lease — three awaitables installed by ``server.main``
+#: alongside the pointer provider: ``acquire(path) -> token | None``,
+#: ``renew(token) -> bool``, ``release(token) -> None``. ``None`` in the gateway, where
+#: the registry above is called directly.
+RemovalLeaseClient = tuple[
+    Callable[[str], Awaitable[str | None]],
+    Callable[[str], Awaitable[bool]],
+    Callable[[str], Awaitable[None]],
+]
+_REMOVAL_LEASE_CLIENT: RemovalLeaseClient | None = None
+
+
+def install_removal_lease_client(client: RemovalLeaseClient | None) -> None:
+    global _REMOVAL_LEASE_CLIENT
+    _REMOVAL_LEASE_CLIENT = client
+
+
+async def _local_acquire(path: str) -> str | None:
+    # Same process as the cutover: the caller holds ``_MAKE_LIVE_LOCK`` (see
+    # ``worktree_ops``), which is itself the exclusion — the lease is recorded so
+    # ``removal_in_progress`` answers, not to re-arbitrate against that lock.
+    return acquire_removal_lease(path, check_cutover=False)
+
+
+async def _local_renew(token: str) -> bool:
+    return renew_removal_lease(token)
+
+
+async def _local_release(token: str) -> None:
+    release_removal_lease(token)
+
+
+@dataclass(frozen=True)
+class LeaseOutcome:
+    """What :func:`removal_lease` yields: granted, or refused with its cause.
+
+    ``refusal`` is ``"busy"`` when the gateway answered and declined (a cutover is
+    staged or in flight, or another removal holds the lease) and ``"unavailable"``
+    when the gateway could not be reached at all. The two have opposite remedies —
+    wait, versus check the gateway — so callers word them separately. Truthy iff
+    granted, so a caller that only needs the flag can test it directly.
+    """
+
+    granted: bool
+    refusal: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.granted
+
+
+@contextlib.asynccontextmanager
+async def removal_lease(path: str) -> AsyncIterator[LeaseOutcome]:
+    """Hold a renewed removal lease on *path* for the block; yields the outcome.
+
+    In the backend the lease is taken, heartbeated and released through the gateway
+    broker; a broker outage at acquisition yields a refusal with cause
+    ``"unavailable"`` and a declined acquisition one with cause ``"busy"`` (the removal
+    then refuses — it cannot prove no cutover is in flight). In the gateway it is the
+    local registry. Callers that cannot wrap a long block in ``try`` test the outcome
+    and return their own refusal.
+
+    While the block runs, a heartbeat task renews the lease every
+    :data:`_REMOVAL_LEASE_RENEW_SECS`, so it cannot lapse during a long removal
+    (pod shutdown, ``_GIT_MUTATION_LOCK`` queueing, the git mutation itself). If a
+    renewal is REFUSED — the gateway restarted and forgot the lease, or the token was
+    released — the heartbeat records the loss and stops; the block is not cancelled
+    from outside, because the git mutation inside it runs uninterruptibly by design and
+    an exception delivered mid-``git worktree remove`` would be the corruption this lock
+    exists to prevent. Callers that must not START a mutation after a loss check
+    :func:`removal_lease_lost` at their mutation boundary.
+    """
+    acquire, renew, release = (
+        _REMOVAL_LEASE_CLIENT
+        if _REMOVAL_LEASE_CLIENT is not None
+        else (_local_acquire, _local_renew, _local_release)
+    )
+    try:
+        token = await acquire(path)
+    except PointerUnavailable:
+        yield LeaseOutcome(False, "unavailable")
+        return
+    if token is None:
+        yield LeaseOutcome(False, "busy")
+        return
+    lost = asyncio.Event()
+    last_ok = time.monotonic()
+
+    async def _heartbeat() -> None:
+        nonlocal last_ok
+        while True:
+            await asyncio.sleep(_REMOVAL_LEASE_RENEW_SECS)
+            try:
+                ok = await renew(token)
+            except PointerUnavailable:
+                # Transient while the lease still has TTL left. But a gateway that has
+                # been unreachable for a whole TTL has let the lease lapse (the grace
+                # barrier still holds there) — the holder must treat that as lost too,
+                # or an outage would leave it believing in a lease the gateway has dropped.
+                if time.monotonic() - last_ok >= _REMOVAL_LEASE_TTL_SECS:
+                    lost.set()
+                    return
+                continue
+            if not ok:
+                lost.set()
+                return
+            last_ok = time.monotonic()
+
+    async def _confirm() -> bool:
+        """An explicit renewal NOW: the proof a mutation boundary needs."""
+        if lost.is_set():
+            return False
+        try:
+            ok = await renew(token)
+        except PointerUnavailable:
+            ok = False
+        if not ok:
+            lost.set()
+        return ok
+
+    beat = asyncio.create_task(_heartbeat())
+    _LEASE_LOSS_EVENTS[path] = lost
+    _LEASE_CONFIRMS[path] = _confirm
+    try:
+        yield LeaseOutcome(True)
+    finally:
+        _LEASE_LOSS_EVENTS.pop(path, None)
+        _LEASE_CONFIRMS.pop(path, None)
+        beat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await beat
+        try:
+            await release(token)
+        except PointerUnavailable:
+            # The lease expires on its own; the gateway is the one that vanished.
+            pass
+
+
+#: worktree path -> "lost" event for the lease this process currently holds on it.
+_LEASE_LOSS_EVENTS: dict[str, asyncio.Event] = {}
+#: worktree path -> "confirm" (explicit renewal) for the lease this process holds on it.
+_LEASE_CONFIRMS: dict[str, Callable[[], Awaitable[bool]]] = {}
+
+
+def removal_lease_lost(path: str) -> bool:
+    """Whether a lease this process holds on *path* has been lost (renewal refused, or
+    no renewal succeeded for a whole TTL).
+
+    Checked by the removal at its mutation boundaries: a lost lease means a cutover or
+    restart is not excluded any more, so the mutation must not start.
+    """
+    event = _LEASE_LOSS_EVENTS.get(path)
+    return event is not None and event.is_set()
+
+
+async def confirm_removal_lease(path: str) -> bool:
+    """Prove, by renewing it NOW, that this process's lease on *path* still holds.
+
+    The removal passes this as ``_run_cmd``'s ``pre_spawn`` gate: it runs after the
+    sandbox preparation hop and immediately before ``git worktree remove`` is spawned,
+    so a successful renewal here means the gateway excludes cutovers from this worktree
+    for at least a TTL — and, should this holder then die mid-mutation, for the grace
+    barrier beyond that. ``False`` when no lease is held, it was lost, or the gateway
+    cannot be reached to renew it.
+    """
+    confirm = _LEASE_CONFIRMS.get(path)
+    if confirm is None:
+        return False
+    return await confirm()
+
 
 # Which checkout powers the live gateway (the upstream reference showed this
 # per-row as is_live; users need to see what occupies the main instance).
@@ -92,6 +468,10 @@ def _staged_target() -> str | None:
     picked up: the next start lands on this checkout, and until then the running
     image is a different one. The UI renders this as its own persistent state so
     the pending restart survives a dismissed toast or a page reload.
+
+    GATEWAY-LOCAL: reads the pointer file directly, which only the gateway may do.
+    ``_make_live`` (gateway-only) calls this; the backend's call sites go through
+    :func:`_staged_target_resolved`.
     """
     pointed = live_target.read_target()
     if pointed is None:
@@ -102,13 +482,25 @@ def _staged_target() -> str | None:
     return str(pointed)
 
 
+async def _staged_target_resolved() -> str | None:
+    """:func:`_staged_target`, answered by whichever side owns the pointer."""
+    if _POINTER_PROVIDER is not None:
+        return (await _POINTER_PROVIDER(False)).staged
+    return _staged_target()
+
+
 async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     """Resolve the checkout the live gateway is RUNNING from (or None).
 
     ``fresh=True`` bypasses the 30s display cache -- destructive callers
     (worktree removal) must never authorize against a stale answer: the
     gateway can switch checkouts within the TTL window.
+
+    Provider-aware: the backend gets this through the gateway broker; the body
+    below is the gateway's own resolution.
     """
+    if _POINTER_PROVIDER is not None:
+        return (await _POINTER_PROVIDER(fresh)).live
     global _LIVE_WORKTREE, _LIVE_CHECK_AT
     now = time.monotonic()
     if not fresh and _LIVE_CHECK_AT and (now - _LIVE_CHECK_AT) < _LIVE_TTL:
@@ -128,7 +520,9 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     # prevent. ``_running_checkout()`` is authoritative for what is executing, so
     # the pointer is only "live" when the two agree; otherwise it is staged
     # (see ``_staged_target``) and resolution falls through to the definition.
-    pointed = live_target.read_target()
+    pointed = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), live_target.read_target
+    )
     if pointed is not None:
         running = _running_checkout()
         if running is None or repository._same_path(str(pointed), str(running)):
@@ -323,11 +717,20 @@ async def _gateway_service_reason() -> str | None:
         return None
     status = await _live_user_unit_status()
     reason = _make_live_status_error(status)
-    if status in {"no_agent", "no_user_unit"} and await _live_worktree_path() is None:
-        reason += (
-            ". The running gateway does not belong to any known worktree, so "
-            "restarting it would not apply a Pull+Build of the main checkout"
-        )
+    if status in {"no_agent", "no_user_unit"}:
+        # The pointer read goes through the broker in the backend. An outage there
+        # is "unknown", not "no worktree": the hint below is advisory, and raising
+        # out of a payload field would collapse the whole fleet view to an error
+        # when the rows themselves are fine.
+        try:
+            unknown_worktree = await _live_worktree_path() is None
+        except PointerUnavailable:
+            unknown_worktree = False
+        if unknown_worktree:
+            reason += (
+                ". The running gateway does not belong to any known worktree, so "
+                "restarting it would not apply a Pull+Build of the main checkout"
+            )
     return reason
 
 
@@ -344,7 +747,17 @@ async def _staged_cancel_available() -> bool:
     same signal as ``_gateway_service_active()``, which also goes true for the
     foreground last resort (where ``can_restart`` stays false and the cancel
     DOES work).
+
+    Provider-aware: the backend takes the gateway's answer, because the
+    service-manager probe is a fact about the GATEWAY's plane.
     """
+    if _POINTER_PROVIDER is not None:
+        return (await _POINTER_PROVIDER(False)).staged_cancel_available
+    return await _staged_cancel_available_local()
+
+
+async def _staged_cancel_available_local() -> bool:
+    """GATEWAY-LOCAL probe behind :func:`_staged_cancel_available`."""
     svc = _gateway_backend()
     if svc is None:
         return True
@@ -462,6 +875,15 @@ async def _restart_gateway() -> dict:
             return {
                 "ok": False,
                 "error": "a Make Live cutover is in progress — retry after it completes",
+            }
+        # A restart tree-kills the backend, so it must not land while the backend
+        # is mid-``git worktree remove``. Checked under the lock: with the lock held
+        # no new lease can be granted (``acquire_removal_lease`` refuses), so this
+        # answer holds for the rest of the block.
+        if removal_in_progress():
+            return {
+                "ok": False,
+                "error": "a worktree removal is in progress — retry once it has completed",
             }
 
         svc = _gateway_backend()
@@ -781,6 +1203,48 @@ def _make_live_plan(
 
 
 async def _make_live(path: str, dry_run: bool = False, expected_staged: str | None = None) -> dict:
+    """Repoint the live gateway at *path* — the gateway-process entry point.
+
+    Two duties sit here, around :func:`_make_live_inner` which carries the whole
+    validation and cutover sequence:
+
+    * **Process boundary.** Only the gateway may WRITE the pointer. In the
+      sandboxed backend the pointer is a bind-masked file (``os.replace`` onto it
+      is EBUSY) — but the refusal is not about the error it would hit, it is about
+      the boundary: a backend that could write the pointer would hand that power to
+      every build child in its namespace. The backend installs a pointer provider
+      at startup, so its presence is the process's identity.
+    * **Cross-process exclusion.** The backend's worktree removal holds a
+      :func:`removal_lease` — gateway-held state — across its protection re-check
+      and ``git worktree remove``. A live lease refuses the cutover ``busy`` here;
+      once the inner sequence holds ``_MAKE_LIVE_LOCK`` no new lease can be granted
+      (:func:`acquire_removal_lease` checks that lock), so the window between this
+      check and the lock is closed from the other side. A ``dry_run`` mutates
+      nothing and skips the check, so a preview never waits on a removal.
+    """
+    if _POINTER_PROVIDER is not None:
+        return {
+            "ok": False,
+            "code": "wrong_process",
+            "error": (
+                "make-live must run in the gateway process (POST "
+                "/api/apps/dev-fleet/make-live), not in the Dev Fleet backend"
+            ),
+        }
+    if dry_run:
+        return await _make_live_inner(path, dry_run=True, expected_staged=expected_staged)
+    if removal_in_progress():
+        return {
+            "ok": False,
+            "code": "busy",
+            "error": "a worktree removal is in progress — retry once it has completed",
+        }
+    return await _make_live_inner(path, dry_run=False, expected_staged=expected_staged)
+
+
+async def _make_live_inner(
+    path: str, dry_run: bool = False, expected_staged: str | None = None
+) -> dict:
     """Repoint the live gateway at *path* by staging the live-target pointer.
 
     ``expected_staged`` binds a CANCEL to the state the operator confirmed:
@@ -986,6 +1450,14 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
                         "a cutover has been scheduled; the gateway is restarting — "
                         "retry after it comes back"
                     ),
+                }
+            if removal_in_progress():
+                # Granted between the wrapper's check and this lock; none can be
+                # granted from here on, so the refusal is complete.
+                return {
+                    "ok": False,
+                    "code": "busy",
+                    "error": "a worktree removal is in progress — retry once it has completed",
                 }
             # Re-read under the lock: the awaits above mean the stage may have
             # been completed or re-pointed since the entry check, and cancelling
@@ -1207,6 +1679,14 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
                     "retry after it comes back"
                 ),
             }
+        if removal_in_progress():
+            # Granted between the wrapper's check and this lock; none can be granted
+            # from here on, so the refusal is complete.
+            return {
+                "ok": False,
+                "code": "busy",
+                "error": "a worktree removal is in progress — retry once it has completed",
+            }
         # Re-validate artifacts inside the lock: a concurrent provision or
         # rebuild may have changed the binary or dist between the early probe
         # above and now.  The cutover commits the exact state on disk at this
@@ -1401,6 +1881,11 @@ async def _make_live(path: str, dry_run: bool = False, expected_staged: str | No
 
 
 __all__ = (
+    "PointerProvider",
+    "LeaseOutcome",
+    "PointerState",
+    "PointerUnavailable",
+    "RemovalLeaseClient",
     "_GATEWAY_SERVICE_ACTIVE",
     "_GATEWAY_SERVICE_CHECK_AT",
     "_GATEWAY_SERVICE_TTL",
@@ -1429,6 +1914,7 @@ __all__ = (
     "_live_user_unit_status",
     "_live_worktree_path",
     "_make_live",
+    "_make_live_inner",
     "_make_live_plan",
     "_make_live_status_error",
     "_manual_restart_command",
@@ -1437,6 +1923,18 @@ __all__ = (
     "_running_checkout",
     "_sd_value",
     "_staged_cancel_available",
+    "_staged_cancel_available_local",
     "_staged_notice",
     "_staged_target",
+    "_staged_target_resolved",
+    "acquire_removal_lease",
+    "confirm_removal_lease",
+    "install_removal_lease_client",
+    "release_removal_lease",
+    "removal_lease_lost",
+    "renew_removal_lease",
+    "removal_in_progress",
+    "removal_lease",
+    "install_pointer_provider",
+    "pointer_state",
 )

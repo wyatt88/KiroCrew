@@ -3409,7 +3409,7 @@ def test_audited_decorator_applied_to_mutations():
         "api_dev_fleet_pod_down", "api_dev_fleet_pod_restart",
         "api_dev_fleet_pod_token", "api_dev_fleet_pod_provision",
         "api_dev_fleet_pod_provision_dismiss",
-        "api_dev_fleet_rebase", "api_dev_fleet_restart_gateway",
+        "api_dev_fleet_rebase",
     ]:
         fn = getattr(mod, name)
         # _audited wraps with __name__ preserved
@@ -3429,7 +3429,10 @@ def test_create_app_returns_aiohttp_application():
     assert "/health" in routes
     assert "/api/fleet" in routes
     assert "/api/sync" in routes
-    assert "/api/restart-gateway" in routes
+    # Served by the GATEWAY process now (gateway_routes.py): the pointer they touch
+    # is masked from this backend and every child it spawns.
+    assert "/api/restart-gateway" not in routes
+    assert "/api/make-live" not in routes
 
 
 # ---- platform fixes discovered during pod QA of the builtin re-shell ----
@@ -3604,9 +3607,14 @@ async def test_restart_gateway_active_detached():
 
 @pytest.mark.asyncio
 async def test_restart_gateway_audited():
-    """The restart-gateway endpoint is wrapped by _audited."""
+    """The restart-gateway endpoint lives in the gateway route module and is a coroutine
+    (the backend does not expose it — see gateway_routes.py)."""
     import inspect
-    fn = mod.api_dev_fleet_restart_gateway
+
+    from kiro_crew.apps.builtins.dev_fleet import gateway_routes
+
+    assert not hasattr(mod, "api_dev_fleet_restart_gateway")
+    fn = gateway_routes.handle_restart_gateway
     assert callable(fn) and inspect.iscoroutinefunction(fn)
 
 
@@ -4058,12 +4066,22 @@ async def test_make_live_already_live_space_path(monkeypatch, tmp_path):
 
 
 def test_make_live_route_registered_and_audited():
-    """/api/make-live is wired in create_app and the handler is a coroutine."""
+    """/make-live is wired in the GATEWAY route module, not the backend's create_app:
+    the pointer it writes is masked from the backend and every child it spawns."""
     import inspect
-    app = mod.create_app()
-    paths = [getattr(r.resource, "canonical", None) for r in app.router.routes()]
-    assert "/api/make-live" in paths
-    fn = mod.api_dev_fleet_make_live
+
+    from aiohttp import web as _web
+
+    from kiro_crew.apps.builtins.dev_fleet import gateway_routes
+
+    backend_paths = [getattr(r.resource, "canonical", None) for r in mod.create_app().router.routes()]
+    assert "/api/make-live" not in backend_paths
+    assert not hasattr(mod, "api_dev_fleet_make_live")
+    gw = _web.Application()
+    gateway_routes.register_routes(gw)
+    gw_paths = [getattr(r.resource, "canonical", None) for r in gw.router.routes()]
+    assert "/api/apps/dev-fleet/make-live" in gw_paths
+    fn = gateway_routes.handle_make_live
     assert callable(fn) and inspect.iscoroutinefunction(fn)
 
 

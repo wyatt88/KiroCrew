@@ -1231,7 +1231,7 @@ export default function DevFleetPage() {
             notify(i18nT('pages.devFleetPage.build_finished_restarting_gateway'), { type: 'success' })
             setRestarting(true)
             setGatewayError(null)
-            api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+            api.postGateway<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
               .then(async (r) => {
                 if (!r?.ok) {
                   const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
@@ -1619,7 +1619,7 @@ export default function DevFleetPage() {
     setRestarting(true)
     setGatewayError(null)
     try {
-      const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+      const r = await api.postGateway<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
       if (!r?.ok) {
         const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); return
@@ -1665,7 +1665,7 @@ export default function DevFleetPage() {
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
-      const r = await api.post<{
+      const r = await api.postGateway<{
         ok?: boolean; error?: string; start_id?: string | null
         staged_only?: boolean; cancelled?: boolean; notice?: string
       }>('/make-live', cancellingStage && stagedWorktree?.path

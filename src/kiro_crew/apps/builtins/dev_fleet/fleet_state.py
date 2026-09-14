@@ -1055,8 +1055,24 @@ def _orphan_count_sync(cfg: Any) -> int | None:
 
 
 async def _build_fleet() -> dict:
-    live_path = await live._live_worktree_path()
-    staged_path = live._staged_target()
+    # Pointer state is answered by the gateway (the pointer file is masked from this
+    # backend). A broker outage must not take the whole fleet view down with it: the
+    # rows still render with no live/staged badge, and the reason goes to the backend
+    # log — the operator-facing surface for a gateway that stopped answering. The
+    # destructive paths (removal, prune override) refuse on the same condition.
+    # ONE snapshot carries all three pointer-derived fields, so a gateway that goes
+    # away while the rest of the fleet is being built cannot fail a later read.
+    try:
+        pointer = await live.pointer_state()
+    except live.PointerUnavailable as exc:
+        runtime.logger.warning(
+            "fleet view: live-target state unavailable, no row will be marked live or "
+            "staged: %s",
+            runtime._redact(str(exc)),
+        )
+        pointer = live.PointerState(live=None, staged=None, staged_cancel_available=False)
+    live_path = pointer.live
+    staged_path = pointer.staged
     worktrees = await repository._discover_worktrees()
     cfg = runtime._load_cfg()
     loop = asyncio.get_running_loop()
@@ -1285,11 +1301,10 @@ async def _build_fleet() -> dict:
         # the toast that announced it.
         "staged_target": runtime._redact(staged_path) if staged_path else None,
         # Whether the pointer-only cancel of that stage would be accepted (see
-        # _staged_cancel_available). Only probed while a stage exists; false
-        # otherwise so the dashboard's cancel control stays hidden.
-        "staged_cancel_available": (
-            staged_path is not None and await live._staged_cancel_available()
-        ),
+        # _staged_cancel_available). From the same snapshot as the stage itself, so
+        # the two can never disagree; false with no stage so the dashboard's cancel
+        # control stays hidden.
+        "staged_cancel_available": (staged_path is not None and pointer.staged_cancel_available),
         "manual_restart": live._manual_restart_command(),
         # WHY the gateway cannot be restarted/repointed from here, when it
         # cannot. Same lesson as pods_unavailable_reason below: the previous

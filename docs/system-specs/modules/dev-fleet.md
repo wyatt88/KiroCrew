@@ -171,8 +171,21 @@ verification. Route names below are relative to that prefix.
 | `/apps/dev-fleet/api/pod/provision` | `{name}` | Start async venv+dist build (returns `{run_id}`) |
 | `/apps/dev-fleet/api/pod/provision/dismiss` | `{name, run_id}` | Forget a terminal provision failure when the run id still matches |
 | `/apps/dev-fleet/api/rebase` | `{name}` | Rebase worktree onto origin/main |
-| `/apps/dev-fleet/api/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
-| `/apps/dev-fleet/api/make-live` | `{path, dry_run?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
+
+Two routes are served by the **gateway process** rather than the backend, under the
+in-gateway namespace `/api/apps/dev-fleet/` (`gateway_routes.py`, mounted by the
+`BUILTIN_NAMES` loop). Both are **dashboard-owner only** and refuse any app token:
+
+| Route | Body | Purpose |
+|---|---|---|
+| `POST /api/apps/dev-fleet/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
+| `POST /api/apps/dev-fleet/make-live` | `{path, dry_run?, expected_staged?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
+| `GET /api/apps/dev-fleet/live-target` | `?fresh=1` | The pointer-state read broker `{live, staged, staged_cancel_available}` — readable by a dashboard user and by Dev Fleet's own app token (how the sandboxed backend learns which row is live), refused for any other app's token |
+
+Why these two moved: they write the live-target pointer (or hold its cutover latch), and
+that file is bind-masked from the sandboxed backend **and every child it spawns** — a
+nested sandbox is denied by design, so a worktree's `npm ci` lifecycle script runs in the
+backend's namespace. See *Make Live → Pointer file*.
 
 ## Authorization
 
@@ -533,7 +546,7 @@ duplicate Restart Gateway causes a second real ~10s gateway outage
 
 ### Restart identity handshake
 
-`POST /apps/dev-fleet/api/restart-gateway` returns `{"ok": true, "start_id": …}`
+`POST /api/apps/dev-fleet/restart-gateway` (gateway process) returns `{"ok": true, "start_id": …}`
 after the platform manager accepts the restart. Linux schedules detached
 `systemd-run`; macOS submits `launchctl stop` under the loaded contract described
 below. The bounce happens after the response, so success does not mean the new
@@ -934,11 +947,12 @@ directory is unaffected.
 
 ## Make Live
 
-`POST /apps/dev-fleet/api/make-live` repoints the live gateway at a different
-worktree by writing a **live-target pointer file** (`live_target.json`). The
-gateway resolves this pointer at startup and `execve`s into the named checkout's
-own `kirocrew` binary — moving the working directory and `PATH` with it. No
-service definition is ever mutated.
+`POST /api/apps/dev-fleet/make-live` — served by the **gateway process**, not the
+Dev Fleet backend — repoints the live gateway at a different worktree by writing a
+**live-target pointer file** (`live_target.json`). The gateway resolves this
+pointer at startup and `execve`s into the named checkout's own `kirocrew` binary
+— moving the working directory and `PATH` with it. No service definition is
+ever mutated.
 
 The mechanism is the version-selector shape used by `rustup` (reads
 `rust-toolchain.toml`), the Go toolchain (`go` execs from the `toolchain` line
@@ -955,9 +969,116 @@ typically `~/.kiro/crew/live_target.json`). Contents:
 
 Written atomically (temp file + `os.replace`) with mode `0o600`. The file is
 **keystone-fenced** (in `_CREW_SECRET_LEAVES`) so agent tools can neither read
-nor write it — only the human-driven dashboard cutover action writes it, and
-the gateway's startup reader (`live_target.maybe_reexec`) opens it directly
-rather than through the gate.
+nor write it, and **bind-masked at the OS level in every sandbox tier**
+(`sandbox._CREW_HIDDEN_LEAVES`) — including the Dev Fleet backend's own
+namespace. The only writer is the gateway process, on the dashboard owner's own
+authenticated request; the gateway's startup reader (`live_target.maybe_reexec`)
+opens it directly rather than through the gate.
+
+**Why the backend does not get the file back.** The backend is a sandboxed
+spawn, and it spawns `npm ci` / build steps for arbitrary worktrees. A nested
+sandbox is denied on both platforms, so `wrap_argv` runs those children *inside
+the backend's namespace* with no re-mask: any file the backend could write, a
+worktree's lifecycle script could write. A per-backend carve-out (the shape
+md-notebook's Notes state uses) therefore hands a routine Pull+Build the power to
+choose the gateway's next image. Instead:
+
+- **The cutover runs in the gateway** (`gateway_routes.handle_make_live` →
+  `live._make_live`). `_make_live` refuses with `wrong_process` if it is ever
+  invoked in a process that has a pointer provider installed (i.e. the backend).
+  `_MAKE_LIVE_LOCK` / `_MAKE_LIVE_COMMITTED` live in the gateway with it, so
+  `restart-gateway` moved too.
+- **The backend reads pointer state through the gateway.** `server.main` installs
+  a `GatewayPointerBroker` (`pointer_broker.py`) as `live`'s pointer provider: it
+  exchanges the app secret at `POST /api/apps/dev-fleet/token` and reads
+  `GET /api/apps/dev-fleet/live-target` (30 s display cache; `fresh=1` for the
+  removal guards). `_live_worktree_path`, `_staged_target_resolved` and
+  `_staged_cancel_available` route through it. A broker outage raises
+  `PointerUnavailable` — never `None`: the fleet view degrades (no row is marked
+  live or staged, and the backend logs why), while worktree removal and the prune override screen
+  **refuse**, because "nothing is live" from an outage would let a removal delete a
+  staged cutover target.
+- **Removal leases, held in the gateway's memory** (`live.acquire_removal_lease` /
+  `renew_removal_lease` / `release_removal_lease` / `removal_in_progress`; routes
+  `POST` / `PUT` / `DELETE /api/apps/dev-fleet/live-target/removal-lease`), replace
+  the exclusion `_MAKE_LIVE_LOCK` provided when the cutover and a worktree removal
+  ran in one process. The backend takes a lease on the worktree it is about to
+  remove (`live.removal_lease`, via `GatewayPointerBroker`) and holds it across the
+  protection re-check and `git worktree remove`; the gateway refuses a lease while
+  `_MAKE_LIVE_LOCK` is held or a cutover has committed, and `_make_live` /
+  `_restart_gateway` refuse `busy` while any lease is live — checked again under
+  `_MAKE_LIVE_LOCK`, where no new lease can be granted, so the window is closed from
+  both sides. A restart tree-kills the backend, which is why it must not land
+  mid-removal. Three properties carry the design:
+  - **A lease is a capability.** `POST {path}` returns an unguessable token
+    (`secrets.token_urlsafe(24)`); `PUT {token}` (heartbeat) and `DELETE {token}`
+    require it, and a wrong token is a no-op. The shared Dev Fleet app credential is
+    readable by the backend's build children, so a path-only release would let any
+    of them cancel a removal's lease; the capability travels only in the `POST`
+    reply. A child can still *acquire* leases and so delay a cutover — which it could
+    already cause by running `git worktree remove` itself.
+  - **A lease is short (30 s) and heartbeated (every 10 s)** by its holder for as
+    long as the removal runs, through `_GIT_MUTATION_LOCK` queueing and the mutation
+    itself. A *refused* renewal (the gateway restarted and forgot the lease) marks
+    the lease lost; the removal checks `live.removal_lease_lost(path)` after taking
+    `_GIT_MUTATION_LOCK`, and proves the lease FRESH (`live.confirm_removal_lease`, a
+    renewal through the gateway) at each point of no return: immediately before the
+    user-approved untracked-file discard, and again — via `_run_cmd`'s `pre_spawn`
+    gate — after sandbox preparation and immediately before `git worktree remove`
+    is spawned. A refusal before the discard deletes nothing and says so; a refusal
+    after it is reported through the discard-aware path ("discarded N untracked
+    file(s), but then could not remove the worktree"), never as a bland retry. A
+    transient broker error on renewal is retried next tick. A mutation already under
+    way is never cancelled — cancelling `git` mid-write is the corruption this
+    exclusion exists to prevent. A refused acquisition is reported by cause — the
+    gateway declined (a cutover is in progress: wait) versus the gateway could not be
+    reached (check it is running) — and every later refusal leads with the
+    consequence ("the gateway could not confirm that no cutover overlaps this
+    removal") rather than the mechanism.
+  - **Simplification of last resort.** If the lease protocol proves flaky in
+    practice, the stateless fallback is to refuse removal outright whenever a cutover
+    is staged or in flight — coarser, but with no timers to tune. Reach for that
+    before adjusting the TTL, heartbeat or grace values.
+  - **A lapsed lease keeps blocking for a grace barrier** (90 s past its TTL, i.e.
+    longer than the 60 s mutation timeout plus margin) unless explicitly released:
+    the holder may be inside the uninterruptible mutation with no way to be told, so
+    cutovers and restarts stay excluded until it must have finished. Renewal is
+    refused for the whole barrier so a holder that fell behind learns the loss rather
+    than resuming on a barrier about to end.
+  Deliberately *not* a lock file: a file in the crew data home is replaceable by any
+  same-uid process in the backend's namespace, so two sides can end up holding
+  different inodes and stop excluding each other. A refused lease — or a broker
+  outage at acquisition — makes the removal refuse.
+- **Authorization is the owner's request, never a backend credential.** The
+  write routes refuse every app principal, including Dev Fleet's own token: that
+  token is readable by every build child in the backend's namespace. The read
+  route admits that token (and any dashboard user) because the pointer's *path*
+  is not secret — `sys.executable` and the systemd drop-in in `~/.config` already
+  reveal it — and refuses other apps' tokens.
+- **Absent-equivalent document.** `mount(2)` cannot target a path that does not
+  exist, so an absent pointer would be an unmasked pointer, and an agent namespace
+  spawned while it was absent could *create* one the next boot execs. Before every
+  Linux namespace spawn the launcher materialises `live_target.json` as
+  `live_target.NO_TARGET_DOCUMENT` (`{"checkout": null}`), owner-only. The temp is
+  staged inside `~/.kiro/crew/live-target-staging/` — a directory masked in every
+  mode and precreated — never beside the target: the data-home root is visible in
+  every sandbox, and a temp there is a name a concurrent namespace could `link(2)`,
+  keeping a second writable path to the inode the gateway later reads (a bind mask
+  covers a path, not an inode). The materialiser also refuses to launch when the
+  pointer — pre-existing or just published — has a link count other than one.
+  `read_target_reason` reads the stub as `(None, None)` exactly like an absent
+  file. A present `checkout` of another type, or a missing key, is still reported
+  as a defect. **Downgrade note:** the stub is an ordinary file and survives a roll
+  back to a build that predates this reader. That older reader logs
+  `the live-target pointer has no 'checkout' string` at every boot — behaviour is
+  still correct (both readers resolve it to "no live target" and start the
+  installed build), only the wording is alarming. Delete
+  `~/.kiro/crew/live_target.json` on the downgraded host to silence it.
+- **Foreground restart.** `ForegroundBackend` used to refuse from the backend
+  (`backend_confined`: a replacement spawned inside the sandbox would inherit its
+  confinement). In the gateway there is no confinement, so the last-resort
+  foreground restart is now *attempted* where the backend could only advise a
+  manual one — the same detached `kirocrew restart` the CLI's own restart uses.
 
 ### Live-worktree resolution
 

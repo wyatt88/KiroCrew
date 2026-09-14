@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import npm_preflight, sync_runner
@@ -439,8 +439,16 @@ async def _run_cmd(
     env: dict | None = None,
     timeout: int = 30,
     mode: str = "standard",
+    pre_spawn: Callable[[], Awaitable[str | None]] | None = None,
 ) -> tuple[int, str, str]:
     """Run a subprocess asynchronously, return (returncode, stdout, stderr).
+
+    ``pre_spawn`` is a last gate evaluated AFTER sandbox preparation and IMMEDIATELY
+    before the child is spawned — the spawn is the only await that follows it. It
+    returns ``None`` to proceed or a reason to refuse (``(-1, "", reason)``). The
+    worktree removal passes its lease renewal here, so "the gateway still excludes
+    a cutover from this worktree" is proven with nothing of unbounded duration —
+    the preparation hop included — left between the proof and the mutation.
 
     Every spawn routes through ``sandboxed_spawn_argv`` (OS isolation +
     credential-scrubbed env): these commands run against agent-influenced
@@ -478,6 +486,15 @@ async def _run_cmd(
     except RuntimeError as exc:
         # Fail closed: no sandbox backend and unsandboxed exec not opted in.
         return -1, "", f"sandbox unavailable: {exc}"
+    if pre_spawn is not None:
+        refusal = await pre_spawn()
+        if refusal is not None:
+            if cleanup:
+                try:
+                    os.unlink(cleanup)
+                except OSError:
+                    pass
+            return -1, "", refusal
     try:
         proc = await create_subprocess_limited(
             *cmd,

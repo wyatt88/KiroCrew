@@ -1965,6 +1965,20 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         # the inherited PATH; minimal_env() would otherwise strip them.
         if _k.startswith("KIROCREW_DEVFLEET_BIN_"):
             _platform_extra[_k] = _v
+    # The port the gateway ACTUALLY bound (``dashboard.server._export_bound_port``),
+    # handed to the ONE backend that calls back into the gateway: Dev Fleet reads
+    # live-target pointer state through an in-gateway route, because the pointer
+    # itself is masked from its namespace. Scoped by app name exactly as the
+    # ``KIROCREW_DEVFLEET_BIN_`` loop above is — no other backend has a consumer, and
+    # ``pod/runtime.py`` deliberately scrubs this variable from spawns that must not
+    # aim at the live gateway. Not a secret: it is the port every dashboard client
+    # already connects to, and the gateway's own auth governs what a caller may do
+    # there. Absent (a foreground gateway before its site is up, or a test) it is not
+    # passed and the backend degrades as documented.
+    if app_name == "dev-fleet":
+        _bound = os.environ.get("KIROCREW_BOUND_PORT", "")
+        if _bound.isdigit():
+            _platform_extra["KIROCREW_BOUND_PORT"] = _bound
     env = minimal_env(
         PORT=str(port),
         KIROCREW_APP_NAME=app_name,
