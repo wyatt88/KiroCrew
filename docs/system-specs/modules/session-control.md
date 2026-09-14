@@ -190,6 +190,45 @@ operator configuration. Two rules give it that shape:
 
 Ordinary (non-member) callers are untouched: they still require the switch.
 
+### Two `send`-only allows in front of the fence
+
+The ownership fence has exactly two exemptions, both for the `send` operation
+alone -- `create`, `stop`, `close` and `read` are refused `not_creator` exactly as
+above:
+
+- **Member -> member.** A member DM slot may send to another member's DM slot
+  (`_peer_member_send`: caller key prefixed `member-`, target key prefixed
+  `member-` AND target `mode == "member"`, so a foreign slot squatting a member
+  key is not admitted). A member's reach into the person's own sessions is
+  unchanged. There is deliberately no hop cap and no pair rate limit on
+  member<->member traffic: the owner's decision is to trust the agents to
+  recognise and stop a ping-pong themselves, and the prompt-level rule is the
+  whole mechanism.
+- **Child -> creator.** A session may send to the session that created it
+  (`_report_to_creator`: the CALLER slot's `_created_by` equals the target key).
+  This is what lets a worker report back into the member thread that dispatched
+  it, and what `send_message(session="origin")` resolves to for a non-cron caller
+  (`deliver_to_creator`): the creator is admitted through `authorize_target` with
+  this allow, so every other containment refusal -- workspace, channel link,
+  mirror, ephemeral, app -- still applies, and a refused or vanished creator falls
+  back to the bell notification.
+
+**A delivered row carries who spoke.** `send_to_target` and `deliver_to_creator`
+stamp `meta.sent_by = {session_key, title, agent, via, member_slug?}` on the user
+row they append (`sent_by_meta`, built by the gateway from the caller's resolved
+slot, never from the message body), with `via` naming the door --
+`session_send` or `send_message_origin`. The text prefix the MODEL reads
+(`[sent by session <caller> via session_send]`, `via send_message` for the origin
+door) is unchanged; the record is what the transcript reads, so the Members thread
+draws the row as a collapsible "From <name>" row (peer-member rows open, worker
+rows folded) with the prefix line hidden from display only. **A busy member is
+steered, not queued** (`deliver_sent_by`): the message enters the member's running
+turn the way the Members page composer does (`busyMode="steer-only"`), and the
+`steer_push` frame carries the same record as `sentBy`; a member whose turn has no
+steer-capable client, and every non-member target, keeps the queue behaviour. The
+immediate path broadcasts the user row (`broadcast_user=True`) because no
+composer rendered it.
+
 ### The fence propagates to what a fenced caller creates
 
 `_caller_is_ownership_fenced` covers three populations, not two: a member DM slot,

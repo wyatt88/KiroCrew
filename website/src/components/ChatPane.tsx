@@ -93,6 +93,7 @@ export default function ChatPane({
   openSideChat,
   leading,
   busyMode = 'split',
+  peerRows = false,
 }: {
   slotKey: string
   focused?: boolean
@@ -148,6 +149,13 @@ export default function ChatPane({
    *  turn. Decided by the host, never inferred here, so no pane changes
    *  behaviour by accident. */
   busyMode?: ComposerBusyMode
+  /** Draw user rows another session authored (`meta.sent_by`: a peer member's
+   *  `session_send`, a worker's report to the session that created it) as a
+   *  distinct collapsible "From <name>" row instead of the person's own
+   *  bubble. The Members page's DM thread sets it -- that is the surface where
+   *  a colleague's message and the person's own must read differently. Off
+   *  (default) every other pane keeps the SDK's user bubble unchanged. */
+  peerRows?: boolean
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -1153,8 +1161,9 @@ export default function ChatPane({
       // A steer-only surface has no steer/queue concept to explain, so a
       // confirmed steer draws as an ordinary message: no badge, no tint.
       hideSteerBadge: busyMode === 'steer-only',
+      peerRows,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, peerRows],
   )
 
   // Quote / Ask on selected assistant text — the same chat-core seam the main

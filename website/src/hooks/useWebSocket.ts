@@ -4,7 +4,7 @@ import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
 import { useAppDispatch, useAppSelector } from '../store'
 import { store } from '../store'
-import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
+import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, bumpSentByUnread, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
 import { dispatchMcNotification, TURN_DONE_KIND, APPROVAL_KIND, shouldChimeOnTurnDone } from './notificationEvent'
 import { shouldNotifyOnChatComplete } from './chatCompleteNotify'
@@ -32,6 +32,18 @@ import {
   isFullLegacyAutomationRecord,
   normalizeAutomationRecord,
 } from '../monitoring/automation'
+
+/** The gateway's `meta.sent_by` record is present and well-formed: a row another
+ *  session authored. Shape-checked, not trusted -- the frame is server data, but
+ *  a partial payload must not count toward a badge. */
+function isSentByMeta(meta: unknown): boolean {
+  if (!meta || typeof meta !== 'object') return false
+  const rec = (meta as { sent_by?: unknown }).sent_by
+  return !!rec && typeof rec === 'object'
+    && typeof (rec as { session_key?: unknown }).session_key === 'string'
+    && typeof (rec as { via?: unknown }).via === 'string'
+}
+
 
 type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
@@ -1562,7 +1574,12 @@ export function useWebSocket() {
                 data.role === 'user' || data.role === 'inject',
               )
             }
-            if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) dispatch(markSlotUnread({ slot: data.slot, ts: data.ts || undefined }))
+            if (data.slot && data.slot !== store.getState().chat.activeSlot && !reconnectingRef.current) {
+              dispatch(markSlotUnread({ slot: data.slot, ts: data.ts || undefined }))
+              // A row another session authored (peer member, worker report):
+              // the Members roster counts these, the dot alone cannot say how many.
+              if (data.role === 'user' && isSentByMeta(data.meta)) dispatch(bumpSentByUnread(data.slot))
+            }
             // The message landed in THIS window's active slot while the tab is
             // visible: the user is watching it arrive, so the fresh bubble the
             // other windows just lit for it is already read — relay that, with
@@ -1647,10 +1664,20 @@ export function useWebSocket() {
             // which is keyed on `mid`, resolves this row -- without it that patch
             // matches nothing and the state never moves until a reload.
             const steerMid = (data as { mid?: unknown }).mid
+            // Provenance of a steer ANOTHER SESSION sent (a peer member's
+            // `session_send` into a busy member): rides into the row's meta so
+            // the transcript draws it as "From <name>", and counts toward the
+            // roster badge when it lands off the active slot.
+            const steerSentBy = (data as { sentBy?: unknown }).sentBy
+            const steerSlot = (data as { slot?: string }).slot || store.getState().chat.activeSlot || ''
             dispatch(appendSlotMessage({
-              slot: (data as { slot?: string }).slot || store.getState().chat.activeSlot || '',
-              message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}) }, ts: (data as { ts?: string }).ts },
+              slot: steerSlot,
+              message: { role: 'user', content: (data as { content?: string }).content || '', cls: 'msg msg-u', meta: { steer: true, ...(typeof steerSid === 'string' && steerSid ? { sendId: steerSid } : {}), ...(typeof steerState === 'string' && steerState ? { steerState } : {}), ...(typeof steerMid === 'string' && steerMid ? { mid: steerMid } : {}), ...(isSentByMeta({ sent_by: steerSentBy }) ? { sent_by: steerSentBy } : {}) }, ts: (data as { ts?: string }).ts },
             }))
+            if (isSentByMeta({ sent_by: steerSentBy }) && steerSlot && steerSlot !== store.getState().chat.activeSlot && !reconnectingRef.current) {
+              dispatch(markSlotUnread({ slot: steerSlot, ts: (data as { ts?: string }).ts || undefined }))
+              dispatch(bumpSentByUnread(steerSlot))
+            }
             // Steering is the other way to type into a busy session, so it
             // settles the rank exactly like a queued send. The server appends a
             // real `user` row for it, so the authoritative snapshot already

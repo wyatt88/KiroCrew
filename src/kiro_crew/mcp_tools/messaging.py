@@ -531,6 +531,16 @@ def send_message(name: str, args: dict[str, Any]) -> str:
         )
         if not verified_session:
             return _strict_err
+    elif session == "origin" and not caller_session.startswith("cron:"):
+        # A non-cron caller's origin is the session that CREATED it, which the
+        # gateway reads off the caller's own slot -- so the caller has to be
+        # attributable, under the same bar as a channel send. The gateway
+        # kernel-attests the forwarded key against the peer's process ancestry
+        # (``_channel_delivery_key``), and a body field carries no such check.
+        # Not attributable is not an error here: the send still goes out and
+        # takes the documented bell fallback, exactly as it did before origin
+        # resolution knew about creators.
+        verified_session, _ = mcp_core.require_strict_session_key("")
     # ``gov_session`` is the identity every gate below is keyed on. It is the
     # STRICT key whenever one was required, so the identity that is checked is
     # the identity the request is later sent under (``_post`` gets the same

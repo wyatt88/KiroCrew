@@ -5045,12 +5045,21 @@ class _ChatSlot:
         prompt: str,
         run_chat_coro: Callable[[DashboardState, _ChatSlot, str], Coroutine[Any, Any, None]],
         state: DashboardState,
+        *,
+        meta: dict[str, Any] | None = None,
+        broadcast_user: bool = False,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
         Encapsulates the queue-vs-run decision so callers don't need to
         touch ``_queue``, ``task``, or ``_background_tasks`` directly.
         Always registers :func:`_log_task_exception` to prevent silent failures.
+
+        ``meta`` rides on the user row either way: stamped onto the queue entry
+        (the drain unions entry meta into the row it appends) or onto the row
+        the immediate path appends. ``broadcast_user`` makes the immediate row
+        reach open dashboards live, for a prompt no composer rendered
+        optimistically (see :meth:`append`).
 
         Returns ``True`` if the prompt started an agent turn, ``False`` if
         it was queued. Lets callers gate UI-visible side-effects (notifications,
@@ -5069,9 +5078,9 @@ class _ChatSlot:
             # queue drain can re-assert them at delivery: a target
             # that gains a channel/mirror link while this prompt waits must not
             # execute it under the weaker constraints that admitted it.
-            self.queue_append(prompt, meta=containment_meta(state, self))
+            self.queue_append(prompt, meta={**containment_meta(state, self), **(meta or {})})
             return False
-        self.append("user", prompt, "msg msg-u")
+        self.append("user", prompt, "msg msg-u", broadcast_user=broadcast_user, meta=meta)
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)

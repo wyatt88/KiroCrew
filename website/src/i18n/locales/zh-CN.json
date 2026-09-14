@@ -9733,6 +9733,17 @@
       "deepLink": {
         "message_unavailable": "此消息已不在此对话中。"
       },
+      "sentByCard": {
+        "from": "来自 {{name}}",
+        "hide_message": "隐藏消息",
+        "kind_member": "成员",
+        "kind_member_tip": "由另一位团队成员发送",
+        "kind_session": "会话",
+        "kind_session_tip": "由另一个会话发送",
+        "kind_worker": "工作会话",
+        "kind_worker_tip": "由该成员启动的工作会话报告",
+        "show_message": "显示消息"
+      },
       "share": {
         "title": "分享到社交媒体",
         "description": "把这条回复生成一张可随处发布的分享卡片。",
@@ -14514,6 +14525,7 @@
       "filter_source_builtin_description": "{{productName}} 自带的成员",
       "filter_source_package_description": "由能力安装包安装的成员",
       "member_count_filtered": "显示 {{shown}} / {{count}} 位成员",
+      "sent_by_unread_count_other": "来自其他会话的 {{count}} 条新消息",
       "setup_in_crew_manager": "设置私有记忆"
     }
   },

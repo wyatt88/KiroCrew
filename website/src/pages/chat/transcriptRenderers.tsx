@@ -35,6 +35,7 @@ import type React from 'react'
 import ThinkingBlock from './ThinkingBlock'
 import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
+import SentByCard, { parseSentBy } from './SentByCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import { ErrorCard, isAuthRequired, isModelUnentitled } from './ErrorCard'
@@ -138,6 +139,11 @@ export interface TranscriptRendererOptions {
    *  the very mechanics the surface hides. Off (default) the SDK's `user`
    *  entry is used unchanged. */
   hideSteerBadge?: boolean
+  /** Draw user rows carrying the gateway's `meta.sent_by` record (another
+   *  session authored them) as a collapsible "From <name>" row. Off (default)
+   *  no entry is emitted and such a row is the SDK's user bubble, bracket
+   *  prefix and all. */
+  peerRows?: boolean
   /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
    *  card in Settings. Omitted on a surface with no settings route. */
   onOpenSignIn?: () => void
@@ -381,6 +387,27 @@ export function createTranscriptRenderers(
         )
       },
     },
+    // A user row ANOTHER SESSION authored -- a peer member's `session_send`, a
+    // worker's report to the session that created it -- carries the gateway's
+    // `meta.sent_by` record. On a host that asks for it, drawn as a distinct
+    // "From <name>" row instead of the person's own bubble, with the
+    // model-facing provenance prefix hidden from display. Listed BEFORE the
+    // `user` override below: the resolver takes the first matching entry, and a
+    // row without the record falls through to the ordinary user bubble.
+    ...(o.peerRows
+      ? [{
+          id: 'sent_by',
+          roles: ['user'],
+          match: (m: ChatMessage) => parseSentBy(m) !== null,
+          render: (m: ChatMessage, ctx: MessageRenderContext) => {
+            const sentBy = parseSentBy(m)
+            if (!sentBy) return null
+            return ctx.row(
+              <SentByCard message={m} sentBy={sentBy} disclosureKey={ctx.key} onFileOpen={ctx.onFileOpen} />,
+            )
+          },
+        } satisfies MessageRenderer]
+      : []),
     // Replaces the SDK's `user` entry (same id) ONLY when the host asks for it:
     // identical content path (renderUserContent — paste chips, inline images
     // and file cards included), one prop different. Absent the flag no entry is emitted, so every other

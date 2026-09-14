@@ -10159,6 +10159,17 @@
       "deepLink": {
         "message_unavailable": "Этого сообщения больше нет в этом разговоре."
       },
+      "sentByCard": {
+        "from": "От {{name}}",
+        "hide_message": "Скрыть сообщение",
+        "kind_member": "Участник",
+        "kind_member_tip": "Отправлено другим участником команды",
+        "kind_session": "Сеанс",
+        "kind_session_tip": "Отправлено другим сеансом",
+        "kind_worker": "Worker",
+        "kind_worker_tip": "Отчёт worker-сеанса, запущенного этим участником",
+        "show_message": "Показать сообщение"
+      },
       "share": {
         "title": "Поделиться в соцсетях",
         "description": "Превратите этот ответ в карточку, которую можно опубликовать где угодно.",
@@ -15094,6 +15105,10 @@
       "filter_source_builtin_description": "Команды, входящие в {{productName}}",
       "filter_source_package_description": "Команды, установленные пакетами возможностей",
       "member_count_filtered": "{{shown}} из {{count}} участников",
+      "sent_by_unread_count_few": "{{count}} новых сообщения из других сеансов",
+      "sent_by_unread_count_many": "{{count}} новых сообщений из других сеансов",
+      "sent_by_unread_count_one": "{{count}} новое сообщение из другого сеанса",
+      "sent_by_unread_count_other": "{{count}} новых сообщений из других сеансов",
       "setup_in_crew_manager": "Настроить личную память"
     }
   },

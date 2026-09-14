@@ -9875,6 +9875,17 @@
       "deepLink": {
         "message_unavailable": "এই বার্তাটি আর এই কথোপকথনে নেই।"
       },
+      "sentByCard": {
+        "from": "{{name}} থেকে",
+        "hide_message": "বার্তা লুকান",
+        "kind_member": "সদস্য",
+        "kind_member_tip": "অন্য একজন ক্রু সদস্য পাঠিয়েছেন",
+        "kind_session": "সেশন",
+        "kind_session_tip": "অন্য একটি সেশন পাঠিয়েছে",
+        "kind_worker": "ওয়ার্কার",
+        "kind_worker_tip": "এই সদস্যের চালু করা ওয়ার্কার সেশন থেকে রিপোর্ট",
+        "show_message": "বার্তা দেখান"
+      },
       "share": {
         "title": "সোশ্যাল মিডিয়ায় শেয়ার করুন",
         "description": "এই উত্তরটিকে একটি শেয়ার কার্ডে পরিণত করুন যা আপনি যেকোনো জায়গায় পোস্ট করতে পারেন।",
@@ -14708,6 +14719,8 @@
       "filter_source_builtin_description": "{{productName}}-এর সাথে আসা ক্রু",
       "filter_source_package_description": "ক্ষমতা প্যাকেজ দ্বারা ইনস্টল করা ক্রু",
       "member_count_filtered": "{{count}} জনের মধ্যে {{shown}} জন সদস্য",
+      "sent_by_unread_count_one": "অন্য সেশন থেকে {{count}}টি নতুন বার্তা",
+      "sent_by_unread_count_other": "অন্য সেশন থেকে {{count}}টি নতুন বার্তা",
       "setup_in_crew_manager": "ব্যক্তিগত মেমোরি সেট আপ করুন"
     }
   },
