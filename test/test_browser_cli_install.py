@@ -993,6 +993,17 @@ class TestFailureDetailIsRedactedAtTheSource:
         )
 
 
+def test_the_public_redactor_alias_is_the_module_redactor() -> None:
+    """``redact_install_output`` IS ``_redact``, not a lookalike.
+
+    In-repo code uses the public name; the ``_redact`` alias remains only for
+    existing tests in this file. Identity, not mere equal behaviour, is what
+    guarantees a future rename or reimplementation of one cannot silently
+    detach the other and reopen #10403.
+    """
+    assert mod.redact_install_output is mod._redact
+
+
 class TestCliEnvIsPublic:
     """The Node-augmented env helper is importable by view.py and other callers."""
 

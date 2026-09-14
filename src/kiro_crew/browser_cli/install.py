@@ -353,8 +353,8 @@ _warned_cli_refusals: set[tuple[str, str]] = set()
 
 def _warn_cli_refusal(candidate: Path, reason: str) -> None:
     """Emit one credential-redacted, repr-escaped warning per refused candidate."""
-    safe_candidate = _redact(str(candidate))
-    safe_reason = _redact(reason)
+    safe_candidate = redact_install_output(str(candidate))
+    safe_reason = redact_install_output(reason)
     key = (safe_candidate, safe_reason)
     if key in _warned_cli_refusals:
         return
@@ -1089,11 +1089,14 @@ _NPM_SECRET_RES = (
 )
 
 
-def _redact(text: str) -> str:
+def redact_install_output(text: str) -> str:
     """Redact credential-shaped content before it reaches a log or the dashboard.
 
     Runs the shared two-pass used on every external surface, then the npm shapes
-    that pass leaves untouched (see :data:`_NPM_SECRET_RES`).
+    that pass leaves untouched (see :data:`_NPM_SECRET_RES`). Public: any surface
+    that renders installer output (step ``stderr``, the ``error`` fallback, or an
+    exception message quoting an npm line) must use THIS redactor rather than the
+    shared pair alone, or a bare ``_authToken=<value>`` assignment survives.
     """
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
@@ -1104,6 +1107,11 @@ def _redact(text: str) -> str:
             text,
         )
     return text
+
+
+# Backwards-compatible module-private name kept for existing tests that reach
+# the redactor as ``_redact``; in-repo code uses the public name above.
+_redact = redact_install_output
 
 
 def _step(
@@ -1148,7 +1156,7 @@ def _step(
     # alternation with no nested quantifiers, so redacting the full
     # stderr is linear in input length — measured at <200 ms on 50 KB of
     # adversarial input, well below the subprocess timeout.
-    detail = "" if ok else _redact((err.strip() or out.strip()))[:_STDERR_CAP]
+    detail = "" if ok else redact_install_output((err.strip() or out.strip()))[:_STDERR_CAP]
     if not ok:
         logger.warning("playwright-cli install step %s failed (rc=%d): %s", name, rc, detail)
         if hint:
