@@ -152,10 +152,11 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
 
     fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }))
 
-    // The confirm is raised rather than the sheet silently closing.
+    // The confirm is raised rather than the sheet silently closing, and its
+    // body names the member the edits belong to, not the whole crew.
     await waitFor(() => expect(confirmBox()).toBeInTheDocument())
     expect(within(confirmBox()).getByText(
-      'This crew has edits that were never saved. Closing now throws them away.',
+      '“oncall” has edits that were never saved. Closing now throws them away. No other member is affected.',
     )).toBeInTheDocument()
 
     // Back out: the sheet stays and the edited value survives.
