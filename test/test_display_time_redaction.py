@@ -608,3 +608,119 @@ def test_ws_broadcast_leaves_user_content_raw(tmp_path, monkeypatch) -> None:
 
     assert len(sent) == 1, "precondition: exactly one payload was broadcast"
     assert sent[0]["content"] == text, "user-authored content must survive verbatim"
+
+
+# ── 8. structured (non-string) content: one shared guard on both paths ───────
+#
+# No current writer produces non-string content (`ConversationLog.append` and
+# `_ChatSlot.append` type it str, and the session-transfer import validator
+# rejects it), but a pre-rule, legacy, or hand-edited transcript row can carry
+# a list/dict — exactly the class of row read-side redaction exists for.
+# `redact_display_content` is the single shared guard: str leaves are
+# redacted, containers are recursed, scalars pass through — never skipped,
+# never raising. Both display paths (`_prepare_messages` and
+# `_broadcast_chat_message`) route through it.
+
+
+def test_redact_display_content_redacts_a_str_leaf() -> None:
+    from kiro_crew.dashboard.chat_utils import redact_display_content
+
+    out = redact_display_content(f"key {SECRET}")
+    assert isinstance(out, str)
+    assert SECRET not in out
+
+
+def test_redact_display_content_recurses_nested_containers() -> None:
+    """A credential leaf nested in list/dict/tuple gets the same form as the str path."""
+    from kiro_crew.dashboard.chat_utils import redact_display_content
+
+    leaf = f"key {SECRET}"
+    expected = redact_display_content(leaf)
+    out = redact_display_content([{"type": "text", "text": leaf}, ("tuple", leaf)])
+    assert isinstance(out, str), "container result must be serialized to wire-safe text"
+    assert SECRET not in out
+    parsed = json.loads(out)
+    assert parsed[0]["text"] == expected, "nested dict leaf diverged from the str path"
+    assert parsed[1][1] == expected, "tuple leaf diverged from the str path"
+
+
+def test_redact_display_content_keys_untouched_scalars_pass_through() -> None:
+    from kiro_crew.dashboard.chat_utils import redact_display_content
+
+    key = f"key-{SECRET}"
+    out = redact_display_content({key: None, "i": 3, "f": 1.5, "b": True})
+    assert isinstance(out, str), "container result must be serialized to wire-safe text"
+    parsed = json.loads(out)
+    assert key in parsed, "dict KEYS must pass through untouched"
+    assert parsed[key] is None
+    assert parsed["i"] == 3
+    assert parsed["f"] == 1.5
+    assert parsed["b"] is True
+
+
+def test_redact_display_content_does_not_mutate_input() -> None:
+    """Rows are shared by reference; the helper must return new containers."""
+    from kiro_crew.dashboard.chat_utils import redact_display_content
+
+    original = [{"text": f"key {SECRET}"}]
+    snapshot = json.dumps(original)
+    redact_display_content(original)
+    assert json.dumps(original) == snapshot, "input mutated in place"
+
+
+def test_prepare_messages_redacts_structured_assistant_content() -> None:
+    """A structured non-user content is redacted recursively — not raised on."""
+    row = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": f"key {SECRET}"}],
+        "cls": "msg msg-a",
+    }
+    out = _prepare_messages([row], False, live_child="")
+    assert SECRET not in json.dumps(out), "structured content emitted unredacted"
+    # Serialized at the boundary: every frontend consumer treats content as str.
+    assert isinstance(out[0]["content"], str), "wire content must be a string"
+    assert json.loads(out[0]["content"])[0]["type"] == "text", "structure lost in text"
+    # The stored row is shared by reference and must stay untouched.
+    assert SECRET in json.dumps(row["content"]), "stored row mutated in place"
+
+
+def test_prepare_messages_leaves_user_structured_content_raw() -> None:
+    """The user-content carve-out applies to structured shapes too."""
+    row = {"role": "user", "content": [{"text": f"key {SECRET}"}], "cls": "msg msg-u"}
+    out = _prepare_messages([row], False, live_child="")
+    assert SECRET in json.dumps(out[0]["content"])
+
+
+def test_prepare_messages_redacts_structured_variant_content() -> None:
+    """The variants branch shares the same tolerance — one guard, no third copy."""
+    row = {
+        "role": "assistant",
+        "content": "fine",
+        "cls": "msg msg-a",
+        "variants": [{"content": [{"text": f"key {SECRET}"}]}],
+    }
+    out = _prepare_messages([row], False, live_child="")
+    assert SECRET not in json.dumps(out), "structured variant content emitted unredacted"
+    assert isinstance(out[0]["variants"][0]["content"], str), "wire content must be a string"
+
+
+def test_ws_broadcast_redacts_structured_content(tmp_path, monkeypatch) -> None:
+    """A structured non-user content is redacted on the WS path — not skipped."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    state = _make_state(tmp_path / "sessions")
+    sent: list[dict] = []
+    monkeypatch.setattr(state, "_broadcast", lambda payload: sent.append(payload))
+
+    state._broadcast_chat_message(
+        "chat-1-wsstruct",
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": f"key {SECRET}"}],
+            "ts": "1",
+        },
+    )
+
+    assert len(sent) == 1, "precondition: exactly one payload was broadcast"
+    assert sent[0]["_type"] == "chat_message"
+    assert isinstance(sent[0]["content"], str), "wire content must be a string"
+    assert SECRET not in sent[0]["content"], "structured leaf leaked raw"

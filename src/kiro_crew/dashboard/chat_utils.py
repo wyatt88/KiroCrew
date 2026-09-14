@@ -1490,14 +1490,14 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
 
 
 def _redact_value(v):  # type: ignore[no-untyped-def]
-    """Recursively redact any value (str, dict, list, or passthrough)."""
+    """Recursively redact any value (str, dict, list/tuple, or passthrough)."""
     if isinstance(v, str):
         v, _ = redact_exfiltration_urls(v)
         v, _ = redact_credentials(v)
         return v
     if isinstance(v, dict):
         return _redact_meta(v)
-    if isinstance(v, list):
+    if isinstance(v, (list, tuple)):
         # Snapshot for the same reason as _redact_meta — the flush thread reads
         # containers the event loop is still appending to.
         return [_redact_value(i) for i in list(v)]
@@ -1567,6 +1567,36 @@ def _redact_for_display(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def redact_display_content(content: Any) -> str:
+    """Redact a message row's ``content`` for display, tolerating structured shapes.
+
+    The display-time content boundary — :func:`_prepare_messages` on the HTTP
+    history path and ``state._broadcast_chat_message`` on the live SSE path —
+    must neither skip a structured (list/dict) non-user value nor feed it to
+    the regex redactors, which accept only ``str`` and raise ``TypeError`` on
+    anything else. No current writer produces non-string content, but a
+    pre-rule, legacy, or hand-edited transcript row can — exactly the class of
+    row read-side redaction exists for. Both sites route through this ONE
+    helper; do not add another copy of the guard.
+
+    Delegates to :func:`_redact_value`, the same recursive walker the meta
+    redaction uses: ``str`` leaves get ``redact_exfiltration_urls`` then
+    ``redact_credentials`` (the order the existing sites apply), dict VALUES
+    are recursed with keys untouched, and list/tuple elements are recursed
+    into a new list. A ``str`` result is returned as-is; anything else is then
+    serialized to JSON text, because every frontend consumer treats a row's
+    ``content`` as a string (``matchAll`` / ``startsWith`` / ``replace``) and
+    a container emitted on the wire crashes the chat render. Never mutates
+    the input (rows are shared by reference and ``dict(m)`` is shallow) and
+    never raises for JSON-shaped input (``default=str`` covers stray
+    non-JSON leaves).
+    """
+    out = _redact_value(content)
+    if isinstance(out, str):
+        return out
+    return json.dumps(out, ensure_ascii=False, default=str)
 
 
 def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
@@ -3066,8 +3096,7 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         if role == "chunk":
             text = m.get("content", "")
             if text:
-                text, _ = redact_exfiltration_urls(text)
-                text, _ = redact_credentials(text)
+                text = redact_display_content(text)
                 row: dict[str, Any] = {"role": "streaming", "content": text, "cls": "msg msg-a"}
                 # The newest chunk seq folded into this row (see
                 # _collapse_wire_rows). The client seeds its replay guard from
@@ -3093,22 +3122,17 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         # would emit raw stored bytes.
         # User-authored content stays raw: the user typed it and is the only
         # one who sees it back.
+        # Content may be structured (a legacy or hand-edited row):
+        # redact_display_content recurses into it rather than raising.
         if role != "user" and text:
-            text, _ = redact_exfiltration_urls(text)
-            text, _ = redact_credentials(text)
-            m = {**m, "content": text}
+            m = {**m, "content": redact_display_content(text)}
         msg_out = dict(m)
         if msg_out.get("variants"):
             # Snapshot for the same reason as _redact_meta — this runs in a
             # worker thread (slot-detail render offload) while the event
             # loop may still be appending variants to the live list.
             msg_out["variants"] = [
-                {
-                    **v,
-                    "content": redact_credentials(
-                        redact_exfiltration_urls(v.get("content", ""))[0]
-                    )[0],
-                }
+                {**v, "content": redact_display_content(v.get("content", ""))}
                 for v in list(msg_out["variants"])
                 if isinstance(v, dict)
             ]
