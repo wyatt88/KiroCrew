@@ -59,6 +59,33 @@ const MODE_LABEL_KEY: Record<CrewMemoryMode, string> = {
 }
 
 /**
+ * The catalog key for a mode, with an explicit fallback.
+ *
+ * `CrewMemoryMode` is a closed union, so the compiler treats the map above as
+ * total. The value does not come from the compiler: it comes over the wire from a
+ * live stack, and one carrying a `Memory` this pane has not been taught indexes to
+ * `undefined`, which `i18nT` renders as an EMPTY row. Blank is the one thing this
+ * cell must never be, because it reads as a page that failed to load rather than a
+ * value that could not be named. Fall back to the same "Unknown" the empty case
+ * uses.
+ */
+function modeLabelKey(mode: string): string {
+  return MODE_LABEL_KEY[mode as CrewMemoryMode] ?? MODE_LABEL_KEY['']
+}
+
+/**
+ * Whether this pane can name the mode at all.
+ *
+ * Empty and unrecognised are both "we do not know", so both are muted. They are
+ * NOT interchangeable further down: the sentence explaining an unknown mode says
+ * the stack predates the parameter, which is true of the empty case and false of a
+ * value we merely cannot read. A guess about WHY is still a guess.
+ */
+function isNamedMode(mode: string): boolean {
+  return mode !== '' && mode in MODE_LABEL_KEY
+}
+
+/**
  * Stack states that need saying, and how loudly.
  *
  * A settled stack (`CREATE_COMPLETE`, `UPDATE_COMPLETE`) is deliberately ABSENT:
@@ -235,8 +262,8 @@ function CrewCard({ crew, onOpen }: { crew: RemoteCrew; onOpen: () => void }) {
         <Fact
           icon={<Database className="lucide-inline" aria-hidden="true" />}
           label={i18nT('apps.awsControl.crews.fact_mode')}
-          value={i18nT(MODE_LABEL_KEY[crew.memory])}
-          muted={crew.memory === ''}
+          value={i18nT(modeLabelKey(crew.memory))}
+          muted={!isNamedMode(crew.memory)}
           testId="crew-mode"
         />
         <Fact
@@ -369,13 +396,15 @@ function CrewDetail({ account, name, onBack }: {
             <span className="font-mono">{crew.stack}</span>
           </DetailRow>
           <DetailRow label={i18nT('apps.awsControl.crews.fact_mode')} testId="crew-detail-mode">
-            <span className={crew.memory === '' ? 'italic text-muted' : ''} data-testid="crew-detail-mode-value">
-              {i18nT(MODE_LABEL_KEY[crew.memory])}
+            <span className={!isNamedMode(crew.memory) ? 'italic text-muted' : ''} data-testid="crew-detail-mode-value">
+              {i18nT(modeLabelKey(crew.memory))}
             </span>
             {/* The one state that needs a sentence: an unknown mode is not a
                 gap in this page, it is a fact about a stack too old to carry
                 the answer, and without saying so the italic word reads as a
-                failure to load. */}
+                failure to load. Gated on the EMPTY case alone, because that
+                reason is the empty case's -- a mode this pane cannot name is
+                also unknown, but not for the reason this sentence gives. */}
             {crew.memory === '' && (
               <span className="mt-0.5 block text-[12px] text-muted" data-testid="crew-detail-mode-why">
                 {i18nT('apps.awsControl.crews.mode_unknown_why')}

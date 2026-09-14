@@ -1,8 +1,8 @@
 """Remote crews — the deployed-crew inventory behind the console's Crews pane.
 
-A remote crew is a Kiro Crew gateway the owner deployed into their OWN AWS account
-as a service their customers can reach: one CloudFormation stack per crew, one ECS
-service inside it, behind the shared load balancer the base stack owns. This module
+A remote crew is a Kiro Crew gateway the owner deployed into their OWN AWS account:
+one CloudFormation stack per crew, with one ECS service inside it. How a deployed
+crew is reached belongs to the deploy path, and nothing below reads it. This module
 answers what exists and what state it is in. It creates nothing.
 
 Two vocabulary notes, because the word is overloaded in this codebase:
@@ -17,11 +17,14 @@ subprocess chokepoint, exactly as the drive does. No boto3.
 
 **The account binding is asserted, not assumed.** ``profile`` is a name resolved by
 a child CLI process, so a profile repointed from account A to account B would have
-this module report B's crews under a request for A. Every listing therefore
-re-derives the account from ``sts get-caller-identity`` through the SAME profile and
-refuses when it disagrees with the account the caller verified. That is the drive's
-posture (see ``storage.find_drive``) applied to a read-only surface, because the
-consequence here is disclosure rather than a misdirected write.
+this module report B's crews under a request for A. The ROUTE therefore re-derives
+the account from ``sts get-caller-identity`` through the SAME profile before calling
+in here, and refuses when it disagrees with the account the caller verified. The
+functions below deliberately do not repeat that probe: it answers a question about
+the caller, which the route has already settled, and asking again would spend a
+further CLI process to re-derive the same answer. That is the drive's posture (see
+``storage.find_drive``) applied to a read-only surface, because the consequence here
+is disclosure rather than a misdirected write.
 """
 
 from __future__ import annotations
