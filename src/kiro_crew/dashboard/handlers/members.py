@@ -28,7 +28,7 @@ from aiohttp import web
 
 import kiro_crew.dashboard.handlers as _h
 import kiro_crew.dashboard.handlers.agents as _agents_handlers
-from kiro_crew import agent_state, member_templates
+from kiro_crew import agent_state, member_gallery, member_templates
 from kiro_crew import members as members_mod
 from kiro_crew.agent import _atomic_json_write, _spec_path_is_safe, agents_spec_lock
 from kiro_crew.agent_discovery import _read_agent_spec
@@ -168,12 +168,51 @@ def _identity_text(value: object) -> str:
 
 
 def normalize_member_source(raw: object) -> str:
-    """Bound a record's ``source`` to the three values the roster renders."""
-    if raw == _SOURCE_KIROCREW:
+    """Bound a record's ``source`` to the three values the roster renders.
+
+    ``kirocrew`` (created here) and ``local`` (a row the sync made for an agent
+    file the user wrote) are both *mine*; ``builtin`` is shipped by this
+    package; everything else -- ``package``, ``aim``, ``app`` -- came from a
+    package or an installed app.
+    """
+    if raw in (_SOURCE_KIROCREW, "local"):
         return _SOURCE_KIROCREW
     if raw == _SOURCE_BUILTIN:
         return _SOURCE_BUILTIN
     return _SOURCE_PACKAGE
+
+
+async def api_member_templates(request: web.Request) -> web.Response:
+    """GET /api/members/templates — the hire gallery's catalog.
+
+    Every template a member can be hired from, in one shape: the job cards
+    enabled installed apps offer (``crew.templates``), the agent files this
+    package ships (built-ins) and the user's own agent files
+    (:mod:`kiro_crew.member_gallery`). Each card carries the exact ``source``
+    body ``POST /api/members`` takes, what the gallery renders (role, duty,
+    description, tags, category, starter prompts, face, publisher, version),
+    the definition's capabilities, the members already hired from it, and --
+    when a hire would be refused right now -- the refusal's code. A read: the
+    listing is assembled from the manifests, the agent files and the roster.
+    Owner-gated like the hire it leads to. Free text on a card (role, duty,
+    description, tags, prompts) is app- or user-authored and passes the same
+    redactor the roster's identity fields do.
+    """
+    denied = await require_owner_dashboard_request(request, "member.templates")
+    if denied is not None:
+        return denied
+    cards = await asyncio.to_thread(member_gallery.build_catalog)
+    payload = []
+    for card in cards:
+        d = card.to_dict()
+        for key in ("role", "duty", "description", "publisher", "unavailable_reason"):
+            d[key] = _identity_text(d[key])
+        d["tags"] = [_identity_text(t) for t in d["tags"]]
+        d["starter_prompts"] = [
+            {k: _identity_text(v) for k, v in s.items()} for s in d["starter_prompts"]
+        ]
+        payload.append(d)
+    return web.json_response({"templates": payload})
 
 
 async def api_members(request: web.Request) -> web.Response:
@@ -760,6 +799,52 @@ async def api_member_activity(request: web.Request) -> web.Response:
             "entries": [r[2] for r in rows[:_ACTIVITY_LIMIT]],
         }
     )
+
+
+async def api_member_briefing_get(request: web.Request) -> web.Response:
+    """GET /api/members/{slug}/briefing?member=<name> — the member's own briefing, read-only.
+
+    The drawer's Briefing section (design step 6): what the member keeps in
+    ``members/<slug>/briefing.md`` -- seeded once from a template's
+    ``initial_briefing``, then the member's own. Read through
+    :func:`members.read_member_briefing`, the same pinned, fail-closed read the
+    prompt builder uses (no symlink followed anywhere on the agent-writable
+    path, non-regular files refused, capped with a visible marker), so the
+    drawer can never show a byte the prompt would not. ``member`` is required
+    and must derive the slug, the activity endpoint's posture. An absent
+    briefing is ``{"text": "", "supported": true}``; where the platform cannot
+    read one race-free, ``supported`` is false and the drawer says so instead
+    of "no briefing yet".
+    """
+    denied = await _deny_app_caller(request, "members.briefing")
+    if denied is not None:
+        return denied
+    slug = request.match_info["slug"]
+    try:
+        members_mod.validate_slug(slug)
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
+        )
+    member = request.query.get("member", "")
+    if not member or not _AGENT_NAME_RE.match(member):
+        return web.json_response(
+            {"error": "member query parameter required", "code": "missing_member"}, status=400
+        )
+    try:
+        if members_mod.slug_for_name(member) != slug:
+            return web.json_response(
+                {"error": "member does not derive this slug", "code": "member_slug_mismatch"},
+                status=400,
+            )
+    except MemberSlugError:
+        return web.json_response(
+            {"error": "invalid member name", "code": "invalid_member_slug"}, status=400
+        )
+    if not members_mod.member_briefing_supported():
+        return web.json_response({"text": "", "supported": False})
+    text = await asyncio.to_thread(members_mod.read_member_briefing, slug)
+    return web.json_response({"text": text, "supported": True})
 
 
 async def api_member_rules_get(request: web.Request) -> web.Response:

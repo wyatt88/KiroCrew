@@ -237,9 +237,9 @@ class TestProjectAgentNameCache:
         clear_project_agent_cache()
 
         assert project_agent_names(str(secret)) == frozenset()
-        assert sel_events and sel_events[0]["outcome"] == "denied", (
-            f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
-        )
+        assert (
+            sel_events and sel_events[0]["outcome"] == "denied"
+        ), f"sensitive-dir rejection must emit a SEL denial: {sel_events}"
 
     def test_malformed_spec_is_not_dispatchable(self, tmp_path):
         """A file that does not parse must not contribute its filename fallback.
@@ -530,8 +530,11 @@ class TestSpecModelCoercion:
         # are excluded by NAME, not skipped silently: the lists render as chips
         # (one element each) and `kirocrew_owned` is the bool provenance flag —
         # everything else must be a plain string or React error #31 returns.
-        assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned"))
+        assert all(
+            isinstance(v, str)
+            for k, v in info.to_dict().items()
+            if k not in ("skills", "mcp_servers", "kirocrew_owned")
+        )
         assert isinstance(info.to_dict()["kirocrew_owned"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
@@ -635,6 +638,60 @@ class TestListAgentsGlobalGuards:
         )
         agents = list_agents(agents_dir=agents_dir)
         assert any(a.name == "ok" for a in agents)
+
+
+class TestProvenance:
+    """``source`` says where a file came from, not what its name looks like."""
+
+    def _dir(self, tmp_path: Path) -> Path:
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        return agents_dir
+
+    def _installed(self, monkeypatch, tmp_path: Path, *names: str) -> None:
+        home = tmp_path / "home"
+        for n in names:
+            (home / "apps" / n).mkdir(parents=True)
+            (home / "apps" / n / "installed.json").write_text("{}")
+        monkeypatch.setattr("kiro_crew.agent_discovery.peek_data_home", lambda: home)
+
+    def test_a_hand_written_file_is_local_not_builtin(self, tmp_path: Path, monkeypatch) -> None:
+        """A plain ``<name>.json`` nobody shipped is the user's: ``local``. Only
+        the files this package writes are ``builtin`` (or ``kirocrew`` for the
+        assistant and its lite twin)."""
+        from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME, LITE_AGENT_FILENAME
+
+        self._installed(monkeypatch, tmp_path)
+        d = self._dir(tmp_path)
+        (d / "reviewer.json").write_text(json.dumps({"name": "reviewer"}))
+        (d / CONDUCTOR_AGENT_FILENAME).write_text(
+            json.dumps({"name": CONDUCTOR_AGENT_FILENAME[:-5]})
+        )
+        (d / LITE_AGENT_FILENAME).write_text(json.dumps({"name": LITE_AGENT_FILENAME[:-5]}))
+        by_file = {a.filename: a for a in list_agents(agents_dir=d)}
+        assert by_file["reviewer.json"].source == "local"
+        assert by_file[CONDUCTOR_AGENT_FILENAME].source == "builtin"
+        assert by_file[LITE_AGENT_FILENAME].source == "kirocrew"
+
+    def test_an_installed_apps_materialized_agent_is_app(self, tmp_path: Path, monkeypatch) -> None:
+        """``<app>--<agent>.json`` is an app's only when ``<app>`` is installed;
+        the same shape with no such app is a local file with a dash in its name."""
+        self._installed(monkeypatch, tmp_path, "oncall-pack")
+        d = self._dir(tmp_path)
+        (d / "oncall-pack--triage.json").write_text(json.dumps({"name": "triage"}))
+        (d / "ghost-pack--scribe.json").write_text(json.dumps({"name": "scribe"}))
+        by_file = {a.filename: a for a in list_agents(agents_dir=d)}
+        assert by_file["oncall-pack--triage.json"].source == "app"
+        assert by_file["oncall-pack--triage.json"].package == "oncall-pack"
+        assert by_file["ghost-pack--scribe.json"].source == "local"
+        assert by_file["ghost-pack--scribe.json"].package == ""
+
+    def test_a_project_agent_is_local(self, fake_home, tmp_path: Path) -> None:
+        proj = tmp_path / "proj"
+        (proj / ".kiro" / "agents").mkdir(parents=True)
+        (proj / ".kiro" / "agents" / "helper.json").write_text(json.dumps({"name": "helper"}))
+        agents = list_agents(agents_dir=tmp_path / "none", project_dir=proj)
+        assert [a.source for a in agents if a.name == "helper"] == ["local"]
 
 
 class TestListAgentsDedup:
@@ -788,14 +845,10 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a"}
 
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
     def test_cache_invalidates_on_remove(self, tmp_path: Path) -> None:
@@ -803,12 +856,8 @@ class TestListAgentsCache:
         clear_list_agents_cache()
         d = tmp_path / "agents"
         d.mkdir()
-        (d / "a.json").write_text(
-            json.dumps({"name": "a", "model": "auto"}), encoding="utf-8"
-        )
-        (d / "b.json").write_text(
-            json.dumps({"name": "b", "model": "auto"}), encoding="utf-8"
-        )
+        (d / "a.json").write_text(json.dumps({"name": "a", "model": "auto"}), encoding="utf-8")
+        (d / "b.json").write_text(json.dumps({"name": "b", "model": "auto"}), encoding="utf-8")
         assert {a.name for a in list_agents(agents_dir=d)} == {"a", "b"}
 
         (d / "b.json").unlink()
@@ -827,9 +876,9 @@ class TestListAgentsCache:
         # Bump mtime forward deterministically so the signature is guaranteed newer.
         st = f.stat()
         os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-        assert [a.name for a in list_agents(agents_dir=d)] == ["v2"], (
-            "an in-place edit must invalidate the cache"
-        )
+        assert [a.name for a in list_agents(agents_dir=d)] == [
+            "v2"
+        ], "an in-place edit must invalidate the cache"
 
     def test_clear_cache_forces_rescan(self, tmp_path: Path) -> None:
         """clear_list_agents_cache() forces a fresh scan even when the signature

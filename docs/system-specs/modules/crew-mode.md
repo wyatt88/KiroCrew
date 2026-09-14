@@ -34,7 +34,9 @@ Missing history must never silently turn a private topic into Global memory.
 | `src/kiro_crew/subagent.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` |
 | `src/kiro_crew/config/prompt-orchestrator.md` | The orchestrator prompt that names `select_crew` and the delegation rule |
 | `src/kiro_crew/dashboard/handlers/agents.py` | Crew CRUD on `/api/agents`, and the roster row serializer |
-| `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, `POST /api/members`, thread get-or-create, rules, activity |
+| `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, `POST /api/members`, thread get-or-create, rules, activity, briefing, the hire gallery's catalog |
+| `src/kiro_crew/member_gallery.py` | The hire gallery's catalog: every template a member can be hired from, from an app's cards, the shipped built-ins and the user's own agent files, in one shape |
+| `src/kiro_crew/agent_discovery.py` | `list_agents` and the provenance of each agent file (`source`: `kirocrew` / `builtin` / `app` / `package` / `local`) |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Crews UI, mounted as the **Crews** tab of `CapabilitiesPage` (Agent Capabilities) |
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
@@ -570,6 +572,119 @@ the id refuses and keeps the marker; a directory swapped for a link mid-retire i
 unlinked, never followed; the fire holds the thread lock) and
 `FirePanel.test.tsx` (two-step, archive by default, the outcome handed up, purge as
 an explicit tick with a kept thread said, a refused fire kept in view).
+
+## Hire gallery (design step 6): `/members/hire`, `GET /api/members/templates`
+
+The one place a crew member is hired from, whatever the template's origin --
+the rail stays on Crew Members; the gallery is a view under the page (its own
+route so a hire can be linked to; `App.tsx` mounts it lazily like the page).
+The roster's **Add member** (header `+` and the empty roster's call to action)
+opens it. Three sources, one card shape (`member_gallery.build_catalog`, served
+by `GET /api/members/templates`, owner-gated like the hire it leads to; free
+text on a card passes the roster's identity redactor):
+
+- **App cards** -- every card an ENABLED installed app offers in
+  `crew.templates` (`app-kit-platform.md` §3.1), resolved through
+  `member_templates.resolve_store_template` so the card carries the
+  materialized agent's name and capabilities; a card whose hire would be
+  refused right now (not materialized, unreadable spec, invalid crew section)
+  still lists with `hireable: false` and the hire's own code as
+  `unavailable_code`, so the gallery says why Hire is off in the words the
+  hire would use. `source` is `{kind: "store", app, agent}`.
+- **Built-ins** -- the agent files this package ships (`OWNED_KIRO_AGENT_FILES`,
+  `source == "builtin"` in discovery): role humanized from the name
+  (`pipeline-conductor` -> *Pipeline Conductor*), duty from the spec's
+  description, publisher *Kiro Crew*, category `other`. `source` is
+  `{kind: "local", agent}`.
+- **Local files** -- the user's own agent files (`source == "local"`), the same
+  derivation, publisher empty. The assistant (`kirocrew`) is never a card (the
+  `default` member IS it); a member's **private copy** is never a card (it is
+  one colleague's definition, not a posting); an app's materialized file is
+  offered only through its card; a package's agent is the package's to offer.
+
+Each card: `id` (`app:<app>/<agent path>`, `builtin:<name>`, `local:<name>`),
+`origin`, `source`, `role`, `duty` (a card without one falls back to its
+description's first sentence), `description`, `tags`, `category` (the closed
+`CREW_CATEGORIES` vocabulary; unset or unknown is `other`), `starter_prompts`,
+`avatar` (the card's ghost, or null), `team`, `publisher`, `version`, `agent`,
+`capabilities` (the definition's skills and MCP servers, each once), and
+`hired_as` -- the member ids hired from this card and still on the roster: a
+store hire is attributed by the row's `template`, a file hire by the copy's
+lineage (`forked_from` where `private_to` is the member) or a direct binding.
+
+**Provenance is real, not guessed from the filename.** `agent_discovery`
+classifies a user-level agent file as `kirocrew` (the assistant and its lite
+twin, which the sync never auto-creates a crew for), `builtin` (another file
+this package ships), `app` (`<app>--<agent>.json` where `<app>` is an INSTALLED
+app -- known from the apps root, `_installed_app_names`; the double dash is the
+bridge's separator and never a package's, so a leftover of an uninstalled app is
+`local`, not a package named `<app>-`), `package` (`{package}-{name}.json`) or
+`local` (everything else -- a hand-written file is the user's, not built in). A
+project checkout's own `.kiro/agents` file is `local`. The roster's *mine*
+filter reads `kirocrew` and `local` alike (`normalize_member_source`).
+
+**Frontend** (`pages/members/HireGalleryPage.tsx`): scenario chips (All plus
+every category present, in the design's order), a search over role, duty, tags
+and publisher, cards (ghost avatar seeded by the card id or wearing the card's
+ghost; role; duty; the first three tags; **Hire**, or **Open chat** into the
+member already hired from it, or a disabled **Hire team ×N** for a fleet
+template -- not hireable from here yet), and a detail Dialog (full description,
+every tag, an `ErrorNotice` when unhireable, **Try asking** starters, a
+collapsible **Built-in capabilities (N)**, a quiet `publisher · vX · origin`
+line, one primary Hire). No publisher, version or verified mark on the card
+face. **Hire is zero-config**: `POST /api/members {source}` -- nothing else --
+and the page navigates to `/members?member=<id>`; a refusal is said in place.
+The rail row stays active under `/members/hire` (`navRowActive` matches the
+prefix). Pinned in `test/test_member_gallery.py` (**the gate**: cards from all
+three sources with the exact source bodies, the app card's every field, a
+member's copy never listed, `hired_as` attribution for store hires and file
+hires; an unhireable card listed with the hire's code and a disabled app's
+cards absent; redaction; owner gate; `humanize_agent_name`),
+`test/test_agent_discovery.py::TestProvenance` and
+`HireGalleryPage.test.tsx` (filter and chips, the face and its buttons, **the
+gate**: Hire sends only the source and lands on the new member's thread; Open
+chat; the detail layer; a refused hire said in place; catalog error and empty
+states).
+
+**Post-hire thread** (`pages/members/MemberThreadExtras.tsx`): the DM header's
+title row is the **rename affordance** -- a member hired from the gallery is
+named after its role and the row says *Just hired · named after its role*
+(`named_by_user: false`, with the pencil shown at rest) until the first rename;
+the pencil opens an input over the label, Enter saves `display_name` ONLY
+through `PUT /api/agents/{id}` (Escape cancels, an unchanged name writes
+nothing), and the roster refetch carries the flipped flag back. No navigation to
+the crew editor for a name; the drawer's Configuration keeps the "Edit in crew
+manager" exit for everything else. The **empty thread** is ChatPane's
+`emptyState` render prop (handed the pane's own `doSend`, so a starter goes
+through the composer path -- optimistic bubble, queueing rules -- and renders in
+the message column, never as an overlay): a greeting, the member's one-line duty
+(from the catalog card that attributes the member, else its role) and up to
+three starter prompts whose **Ask** sends the prompt; a member with no card
+falls back to the plain "Session ready" hint.
+
+**Drawer as data** (`pages/members/drawerSections.tsx`): the Crew summary is an
+ordered `DrawerSection[]` rendered by one loop (`DRAWER_SECTION_ORDER`):
+**Briefing** (`GET /api/members/{slug}/briefing?member=`, read-only, the same
+pinned fail-closed read the prompt builder uses -- an absent file is empty
+text, a platform that cannot read one race-free says so) -> **Capabilities**
+(the skills and MCP servers of the file the member is bound to, from
+`/api/agents/installed`; the hire invalidates that list so the new copy's
+capabilities read right away) -> **Role template** (a store-hired member only:
+the role-update offer / up-to-date line and detach, in the open part of the
+drawer because an offer the owner cannot see is not one) -> **Activity** (the
+Today / 7-day tiles and the recent log) -> **Sessions it's driving** -> **Auto
+patrol** -> **Wake sources** -> **Configuration** (Member id, Role, Source,
+Agent template, Model, Workspace, Memory store, the memory notice and the
+crew-manager exit) folded behind a disclosure, closed by default. Fire stays at
+the foot, outside the sections. In the gallery a hired card's primary is
+**Open chat**, with a quiet **Hire another** beside it: two members from one
+file and one template hired twice stay reachable after the first hire. **Roster rows** wear the member's face (the
+card's ghost, copied at hire) and a compact source badge on a third line --
+the pack's display name on the face, the version in the title; *Built-in* for a
+shipped member; none for a member created here. Pinned in
+`MembersPage.test.tsx` (rename in place, the just-hired hint, the empty state
+sending through the pane, the section order against the rendered document and
+the folded Configuration) and `MembersPage.identity.test.tsx` (badges).
 
 ## Selection: the `select_crew` contract
 

@@ -27,7 +27,12 @@ from kiro_crew.agent_files import (
     LITE_AGENT_FILENAME,
     OWNED_KIRO_AGENT_FILES,
 )
-from kiro_crew.config.paths import kiro_agents_dir, project_agents_dir, project_kiro_dir
+from kiro_crew.config.paths import (
+    kiro_agents_dir,
+    peek_data_home,
+    project_agents_dir,
+    project_kiro_dir,
+)
 from kiro_crew.executors import discovery_executor
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.security import is_sensitive_path
@@ -106,7 +111,15 @@ class AgentInfo:
     model: str
     skills: list[str] = field(default_factory=list)
     mcp_servers: list[str] = field(default_factory=list)
-    source: str = "builtin"  # "kirocrew" | "package" | "builtin"
+    #: Where the file came from. ``kirocrew``: the two agent files Kiro Crew's
+    #: own setup writes (the built-in assistant and its lite twin -- the sync
+    #: never auto-creates a crew for them); ``builtin``: another file the
+    #: package ships (``OWNED_KIRO_AGENT_FILES``: the conductors); ``app``: a
+    #: file an installed app materialized (``<app>--<agent>.json`` with
+    #: ``<app>`` installed -- known from the apps directory, not guessed from
+    #: the name); ``package``: an AIM package's ``{package}-{name}.json``;
+    #: ``local``: everything else -- a file the user wrote or dropped in.
+    source: str = "builtin"  # "kirocrew" | "builtin" | "app" | "package" | "local"
     package: str = ""  # AIM package name (e.g. "Customer360GenAIContext")
     scope: str = SCOPE_GLOBAL  # "global" | "project"
     # Display-only provenance, deliberately NOT folded into ``source``: that field
@@ -937,10 +950,20 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
     stem = f.stem
 
     package = ""
+    # An installed app's materialized agent: the bridge writes it as
+    # ``<app>--<agent>.json``, and the prefix must name an app that is actually
+    # installed -- a hand-written file that happens to contain ``--`` is not an
+    # app's.
+    app_name = stem.split("--", 1)[0] if "--" in stem else ""
+    is_app_file = bool(app_name) and app_name in _installed_app_names()
     # Package-installed agents follow the "{package}-{name}.json" filename
     # convention (a generic package-manager convention, not tied to any specific
-    # tool). A plain "{name}.json" is built-in.
-    is_package_filename = agent_name and stem.endswith(agent_name) and stem != agent_name
+    # tool). The double dash is the app bridge's separator, never a package's:
+    # an ``<app>--<agent>`` file whose app is NOT installed is a leftover
+    # nobody owns -- local -- not a package named ``<app>-``.
+    is_package_filename = (
+        not app_name and agent_name and stem.endswith(agent_name) and stem != agent_name
+    )
     if is_package_filename:
         pkg_stem = f.stem
         if pkg_stem.startswith("local-"):
@@ -949,10 +972,17 @@ def _global_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
 
     if f.name in (AGENT_FILENAME, LITE_AGENT_FILENAME):
         source = "kirocrew"
+    elif f.name in OWNED_KIRO_AGENT_FILES:
+        # Shipped by this package (the conductors): built in, and the only
+        # files that are. Every other plain ``<name>.json`` is the user's.
+        source = "builtin"
+    elif is_app_file:
+        source = "app"
+        package = app_name
     elif is_package_filename:
         source = "package"
     else:
-        source = "builtin"
+        source = "local"
 
     return AgentInfo(
         name=agent_name,
@@ -982,11 +1012,31 @@ def _project_agent_info(f: Path, data: dict[str, Any]) -> AgentInfo:
         model=spec_model(data),
         skills=_extract_skills(data),
         mcp_servers=_mcp_server_names(data),
-        source="builtin",
+        # A checkout's own ``.kiro/agents`` file is the user's, never shipped.
+        source="local",
         package="",
         scope=SCOPE_PROJECT,
         kirocrew_owned=False,
     )
+
+
+def _installed_app_names() -> frozenset[str]:
+    """Names of the installed apps: the directories under the apps root that
+    carry an ``installed.json``. Read per listing (the listing is itself
+    cached and signature-invalidated); nothing is created."""
+    root = peek_data_home() / "apps"
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return frozenset()
+    names: set[str] = set()
+    for entry in entries:
+        try:
+            if entry.is_dir() and (Path(entry.path) / "installed.json").is_file():
+                names.add(entry.name)
+        except OSError:
+            continue
+    return frozenset(names)
 
 
 def _mcp_server_names(data: dict[str, Any]) -> list[str]:

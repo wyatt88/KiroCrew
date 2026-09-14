@@ -76,6 +76,14 @@ async function renderPage(members = [MIGRATED, HIRED, SHIPPED], search = '') {
 
 const NO_SIGNALS = () => ({ running: false, needsYou: false, unread: false, patrolling: false })
 
+/** The drawer's Configuration section is folded by default (design step 6);
+ *  the rows under it are read after opening the disclosure. */
+async function openConfig() {
+  const toggle = await screen.findByTestId('member-section-configuration-toggle')
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle)
+  await screen.findByTestId('member-section-configuration-body')
+}
+
 /** Wide enough to dock the side panel BESIDE the thread (see the page's
  *  panelSitsBeside); happy-dom's default puts it in closed overlay mode. */
 const WIDE_WINDOW = 1440
@@ -140,6 +148,7 @@ describe('MembersPage renders identity', () => {
 
   it('drawer: id, role and provenance rows', async () => {
     await renderPage([MIGRATED, HIRED, SHIPPED], '?member=triage')
+    await openConfig()
     expect(await screen.findByTestId('member-summary-label')).toHaveTextContent('Checkout triage')
     expect(screen.getByTestId('member-summary-role')).toHaveTextContent('Oncall Triage Engineer')
     expect(screen.getByTestId('member-config-id')).toHaveTextContent('triage')
@@ -149,6 +158,7 @@ describe('MembersPage renders identity', () => {
 
   it('drawer: a hand-made member reads as created here with no role', async () => {
     await renderPage([MIGRATED, HIRED, SHIPPED], '?member=case-competition')
+    await openConfig()
     expect(await screen.findByTestId('member-config-id')).toHaveTextContent('case-competition')
     expect(screen.getByTestId('member-config-role')).toHaveTextContent('None')
     expect(screen.getByTestId('member-config-provenance')).toHaveTextContent('Created here')
@@ -157,6 +167,7 @@ describe('MembersPage renders identity', () => {
 
   it('drawer: a shipped member reads as built-in', async () => {
     await renderPage([MIGRATED, HIRED, SHIPPED], '?member=default')
+    await openConfig()
     expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('Built-in')
   })
 
@@ -166,12 +177,14 @@ describe('MembersPage renders identity', () => {
     // another. The drawer therefore says what the copy is OF.
     const hired = row('triage', { display_name: 'Checkout triage', kiro_agent: 'triage', template_origin: 'reviewer' })
     await renderPage([hired, SHIPPED], '?member=triage')
+    await openConfig()
     expect(await screen.findByTestId('member-config-template')).toHaveTextContent('reviewer — customized copy')
     expect(screen.getByTestId('member-config-template')).not.toHaveTextContent(/^triage$/)
   })
 
   it('drawer: a member bound to a shared template shows the template itself', async () => {
     await renderPage([MIGRATED, SHIPPED], '?member=case-competition')
+    await openConfig()
     expect(await screen.findByTestId('member-config-template')).toHaveTextContent('case-competition')
   })
 })
@@ -185,6 +198,7 @@ describe('MembersPage fire (design step 5)', () => {
     })
     const dflt = row('default', { is_default: true })
     await renderPage([MIGRATED, HIRED, dflt], '?member=default')
+    await openConfig()
     await screen.findByTestId('member-config-id')
     expect(screen.queryByTestId('member-fire')).toBeNull()
     // The hired member can be fired.
@@ -204,8 +218,29 @@ describe('MembersPage fire (design step 5)', () => {
 })
 
 describe('MembersPage Source row reads the normalized source', () => {
+  it('roster rows wear a compact source badge: pack name on the face, version in the title; none for a member created here', async () => {
+    vi.mocked(api.listApps).mockResolvedValue([
+      { name: 'oncall-pack', version: '1.2.0', enabled: true, manifest: { name: 'oncall-pack', version: '1.2.0', displayName: 'Oncall pack', description: '', author: '' } },
+    ] as never)
+    const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0' })
+    const shipped = row('default', { source: 'builtin' })
+    const mine = row('triage', { display_name: 'Checkout triage' })
+    await renderPage([hired, shipped, mine])
+    const roster = await screen.findByTestId('member-roster')
+    const badgeOf = (label: string) => {
+      const el = within(roster).getByText(label).closest('li')!
+      return within(el).queryByTestId('member-row-badge')
+    }
+    await waitFor(() => expect(badgeOf('Pager triage')).toHaveTextContent('Oncall pack'))
+    expect(badgeOf('Pager triage')).toHaveAttribute('title', 'Oncall pack v1.2.0')
+    expect(badgeOf('Pager triage')).not.toHaveTextContent('1.2.0')
+    expect(badgeOf('default')).toHaveTextContent('Built-in')
+    expect(badgeOf('Checkout triage')).toBeNull()
+  })
+
   it('a package-installed member reads as from packages, never as created here', async () => {
     await renderPage([row('pkg-a', { source: 'package' })], '?member=pkg-a')
+    await openConfig()
     expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('From packages')
   })
 
@@ -217,6 +252,7 @@ describe('MembersPage Source row reads the normalized source', () => {
     ] as never)
     const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0' })
     await renderPage([hired], '?member=Pager-triage')
+    await openConfig()
     await waitFor(() =>
       expect(screen.getByTestId('member-config-provenance')).toHaveTextContent('Template triage from Oncall pack (v1.2.0)'),
     )
@@ -226,6 +262,7 @@ describe('MembersPage Source row reads the normalized source', () => {
     vi.mocked(api.listApps).mockResolvedValue([] as never)
     const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0' })
     await renderPage([hired], '?member=Pager-triage')
+    await openConfig()
     expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('Template triage from oncall-pack (v1.2.0)')
     expect(screen.queryByTestId('member-config-provenance-error')).toBeNull()
   })
@@ -236,6 +273,7 @@ describe('MembersPage Source row reads the normalized source', () => {
     vi.mocked(api.listApps).mockRejectedValue(new Error('boom'))
     const hired = row('Pager-triage', { display_name: 'Pager triage', template: 'oncall-pack/triage', template_version: '1.2.0' })
     await renderPage([hired], '?member=Pager-triage')
+    await openConfig()
     expect(await screen.findByTestId('member-config-provenance')).toHaveTextContent('Template triage from oncall-pack (v1.2.0)')
     const notice = await screen.findByTestId('member-config-provenance-error')
     expect(notice).toHaveTextContent("The installed apps could not be read, so the template's app is shown by its id.")
