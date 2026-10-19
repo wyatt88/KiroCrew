@@ -196,6 +196,18 @@ test("mac: Window menu keeps the stock role (no Close entry, so Cmd+W reaches th
 for (const isMac of [true, false]) {
   const os = isMac ? "mac" : "win/linux";
 
+  test(`${os}: Connection exposes Network Proxy only when its callback is supplied`, () => {
+    const { deps, calls } = makeDeps({
+      isMac,
+      promptNetworkProxy: () => calls.push("promptNetworkProxy"),
+    });
+    const connection = buildMenuTemplate(deps).find((item) => item.id === "connection-menu");
+    connection.submenu.find((item) => item.label === "Network Proxy…").click();
+    assert.deepStrictEqual(calls, ["promptNetworkProxy"]);
+    const legacy = makeDeps({ isMac });
+    assert.strictEqual(findItem(buildMenuTemplate(legacy.deps), (item) => item.label === "Network Proxy…"), null);
+  });
+
   test(`${os}: Edit, View, Connection, Window menus survive the extraction`, () => {
     const { deps } = makeDeps({ isMac });
     const labels = topLabels(buildMenuTemplate(deps));

@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.9.0",
+  "version": "0.9.0-proxy",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
@@ -143,6 +143,7 @@
       "window-lifecycle.js",
       "runtime/window/chrome.js",
       "runtime/window/prompts.js",
+      "runtime/window/proxy-prompt.js",
       "runtime/window/session-security.js",
       "runtime/window/linux-captions.js",
       "runtime/window/browser-panels.js",
@@ -159,6 +160,7 @@
       "context-menu.js",
       "find-bin.js",
       "gateway-env.js",
+      "outbound-proxy.js",
       "mac-env.js",
       "bundle-integrity.js",
       "data-home.js",

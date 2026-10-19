@@ -728,7 +728,7 @@ describe("window lifecycle tray-close wiring", () => {
 
   it("the owning window boundary requires the helper and main composes that owner", () => {
     assert.match(WINDOW_LIFECYCLE_JS, /require\("\.\/hide-to-tray"\)/);
-    assert.match(MAIN_JS, /const \{ createWindowLifecycle \} = require\("\.\/window-lifecycle"\)/);
+    assert.match(MAIN_JS, /const \{[^}\n]*\bcreateWindowLifecycle\b[^}\n]*\} = require\("\.\/window-lifecycle"\)/);
     assert.match(MAIN_JS, /windows = createWindowLifecycle\(\{/);
   });
 

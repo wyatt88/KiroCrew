@@ -86,6 +86,7 @@ def _run(tmp_path: Path, marker_env: str | None) -> tuple[subprocess.CompletedPr
         text=True,
         encoding="utf-8",
         cwd=tmp_path,
+        timeout=30,
     )
     return proc, electron_dir / "EXTERNALLY-MANAGED"
 
@@ -102,9 +103,16 @@ VALID = {
 
 
 @runs_the_step
-def test_valid_marker_is_staged_verbatim_and_cleaned_up_on_exit(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "marker",
+    [VALID, {"managedBy": "Builder Toolbox", "updateCommand": "/usr/bin/true"}],
+    ids=["check-and-apply", "apply-only"],
+)
+def test_valid_marker_is_staged_verbatim_and_cleaned_up_on_exit(
+    tmp_path: Path, marker: dict[str, str]
+) -> None:
     src = tmp_path / "marker.json"
-    src.write_text(json.dumps(VALID))
+    src.write_text(json.dumps(marker))
     proc, dest = _run(tmp_path, str(src))
     assert proc.returncode == 0, proc.stderr
     assert (
@@ -112,6 +120,18 @@ def test_valid_marker_is_staged_verbatim_and_cleaned_up_on_exit(tmp_path: Path) 
     ), "staged copy is byte-identical while the build runs"
     assert not dest.exists(), "the staged copy must not outlive the build (EXIT trap)"
     assert "Baking EXTERNALLY-MANAGED marker" in proc.stdout
+
+
+@runs_the_step
+def test_named_manual_update_marker_is_staged_without_commands(tmp_path: Path) -> None:
+    src = tmp_path / "marker.json"
+    src.write_text(json.dumps({"managedBy": "Kiro Crew Proxy manual releases"}))
+    proc, dest = _run(tmp_path, str(src))
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(_witness(dest).read_text()) == {
+        "managedBy": "Kiro Crew Proxy manual releases"
+    }
+    assert not dest.exists()
 
 
 @runs_the_step
@@ -141,7 +161,12 @@ def test_empty_value_means_unset(tmp_path: Path) -> None:
         (json.dumps([1, 2]), "must be a JSON object"),
         (json.dumps({**VALID, "extra": "x"}), "unknown field"),
         (json.dumps({**VALID, "updateCommand": 7}), "must be a string"),
-        (json.dumps({"managedBy": "x"}), "no updateCommand"),
+        (json.dumps({}), "non-empty managedBy"),
+        (json.dumps({"managedBy": ""}), "non-empty managedBy"),
+        (
+            json.dumps({"managedBy": "x", "checkCommand": "/usr/bin/true"}),
+            "checkCommand requires updateCommand",
+        ),
         (json.dumps({**VALID, "managedBy": "x" * 9000}), "caps at 8192"),
         # The reader trims and caps each field; the value it would SEE is what
         # is validated, or a whitespace-only command turns the marker bare and
@@ -156,6 +181,8 @@ def test_empty_value_means_unset(tmp_path: Path) -> None:
         "array",
         "unknown-field",
         "non-string",
+        "empty-marker",
+        "empty-manager",
         "no-updateCommand",
         "over-cap",
         "whitespace-only-command",

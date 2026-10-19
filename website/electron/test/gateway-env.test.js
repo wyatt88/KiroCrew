@@ -224,7 +224,7 @@ test("the owned gateway spawn exports the bundled kiro-cli directory after probi
   const supervisor = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
   assert.match(
     supervisor,
-    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?bundledKiroCliEnvironment\(fs, path, processObj\.resourcesPath, \{[\s\S]*?spawnSync: defaultSpawnSync,[\s\S]*?log: glog,[\s\S]*?\}\)/,
+    /env:\s*buildGatewayEnvironment\(getGatewayEnvironment\(\{[\s\S]*?bundledKiroCliEnvironment\(fs, path, processObj\.resourcesPath, \{[\s\S]*?spawnSync: defaultSpawnSync,[\s\S]*?log: glog,[\s\S]*?\}\)/,
   );
 });
 
@@ -238,8 +238,8 @@ test("the one desktop gateway spawn uses the hardened environment builder", () =
   assert.equal(gatewaySpawns.length, 1, "expected one owned gateway spawn boundary");
   assert.match(
     supervisor,
-    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\}\),/,
+    /env:\s*buildGatewayEnvironment\(getGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\}\)\),/,
     "the owned gateway spawn must pass every initial launch and liveness respawn " +
-      "through buildGatewayEnvironment",
+      "through buildGatewayEnvironment after applying the proxy environment",
   );
 });

@@ -13,6 +13,36 @@ macOS signing mechanics and notary-credential rotation live in
 [desktop-app.md](desktop-app.md); the PR-time quality gates live in
 [../ci/ci-and-reviews.md](../ci/ci-and-reviews.md).
 
+## Proxy distribution
+
+The `v0.9.0-proxy` distribution is built locally from the `v0.9.0` source
+with its proxy changes. Run `bash packaging/build-proxy-desktop.sh` on an
+Apple-Silicon Mac to produce the arm64 DMG and ZIP in
+`website/electron/dist/`. The wrapper bundles the pinned Kiro CLI, disables
+signing identity discovery, excludes signing and publishing credentials from
+the build environment, and invokes the normal desktop build pipeline.
+`build-desktop.sh` always passes `--publish never` to electron-builder.
+
+Its display version is `0.9.0-proxy`; Python package metadata uses the valid
+PEP 440 local version `0.9.0+proxy`. The display suffix is SemVer and must not
+be copied into Python package metadata. `packaging/proxy-managed.json` is
+baked into `app.asar` as `EXTERNALLY-MANAGED`, naming the manual release
+process without update commands. The packaged desktop therefore never checks
+or installs the official update feed. Updating this distribution means
+installing a newer Proxy package manually.
+
+The resulting local artifacts are unsigned/ad-hoc and are not Apple-notarized.
+They must not be described as having passed the Developer ID release trust
+chain below. Validate their archive integrity, embedded version, arm64
+architecture, bundled proxy modules, manual-update marker and SHA256 before
+attaching them to the custom release.
+
+The official release pipeline below is not this local packaging path. A
+`v*` tag otherwise selects the complete multi-platform publish workflow.
+This branch's `release.yml` excludes `v*-proxy` and `v*-proxy.*` tags so the
+custom release does not publish the official update feeds or start the
+multi-platform release jobs.
+
 ## The three channels
 
 | Channel | Trigger | Version shape |

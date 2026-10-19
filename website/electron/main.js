@@ -13,6 +13,8 @@ const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
+const { resolveProxyPolicy, applyProxyEnvironment } = require("./outbound-proxy");
 
 const { findConfiguredDashboardPort } = require("./data-home");
 const { defaultedPort } = require("./gateway-auth-hint");
@@ -65,7 +67,7 @@ function reopenCrewCompanionAfterUpdate() {
   try { resumeCrewCompanion(); } catch { /* best effort */ }
 }
 const { createGatewaySupervisor } = require("./gateway-supervisor");
-const { createWindowLifecycle } = require("./window-lifecycle");
+const { BROWSER_PARTITION, createWindowLifecycle } = require("./window-lifecycle");
 const { createIpcRegistrar } = require("./ipc-registrar");
 const { installEarlyBootGuard } = require("./early-boot-guard");
 
@@ -103,11 +105,71 @@ const store = new Store({
     updateChannel: "",
     autoDownloadUpdates: true,
     runLocalGateway: true,
+    networkProxy: { mode: "system", url: "http://127.0.0.1:7890" },
     linuxFrameless: null,
     // Written by gpu-crash-fallback.js when the GPU process dies at startup;
     // read before Chromium initializes on the next launch.
     gpuSoftwareFallback: null,
   },
+});
+
+// Resolve one launch snapshot. Saving a preference never changes the routing of
+// a process that is already running, and the parent environment remains intact
+// for SSH and other main-process helpers.
+let startupProxyPolicy = null;
+let startupProxyError = "";
+try {
+  startupProxyPolicy = resolveProxyPolicy({
+    settings: store.get("networkProxy"),
+    env: process.env,
+    platform: process.platform,
+    readSystemProxy: () => execFileSync("/usr/sbin/scutil", ["--proxy"], {
+      encoding: "utf8",
+      timeout: 2000,
+      maxBuffer: 256 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  });
+} catch (error) {
+  // No fallback: the ready handler presents repair/quit before any dashboard or
+  // Gateway starts. In particular a malformed explicit proxy cannot go direct.
+  startupProxyError = error.message;
+}
+
+const proxySessions = new WeakMap();
+let proxySessionFailure = null;
+function reportProxySessionFailure(error) {
+  if (!proxySessionFailure) {
+    gwarn("Network proxy could not be applied to a browser session: " + error.message);
+    proxySessionFailure = dialog.showMessageBox({
+      type: "error",
+      title: "Network Proxy",
+      message: "The proxy settings could not be applied to a browser session.",
+      detail: "The app will close. Reopen it and check Connection > Network Proxy.",
+      buttons: ["Quit"],
+    }).then(() => requestQuit()).catch(() => requestQuit());
+  }
+  return proxySessionFailure;
+}
+
+function configureSessionProxy(electronSession) {
+  if (!startupProxyPolicy) return Promise.resolve();
+  if (!proxySessions.has(electronSession)) {
+    let applied;
+    try { applied = Promise.resolve(electronSession.setProxy(startupProxyPolicy.chromium)); }
+    catch (error) { applied = Promise.reject(error); }
+    proxySessions.set(electronSession, applied);
+  }
+  return proxySessions.get(electronSession);
+}
+
+// Apply the policy to any additional sessions too. The two sessions this app
+// actually uses are pre-created and awaited below before their first request;
+// an event callback alone cannot delay a later caller's immediate loadURL().
+app.on("session-created", (electronSession) => {
+  void configureSessionProxy(electronSession).catch((error) => {
+    if (app.isReady()) void reportProxySessionFailure(error);
+  });
 });
 
 const KIROCREW_HOME = resolveHome();
@@ -230,8 +292,17 @@ function readInternalSecret() {
 }
 
 let isQuitting = false;
+let startupProxyPromptOpen = false;
 let desktopMetricsRecorder = null;
 let windows = null;
+
+async function promptStartupNetworkProxy(options) {
+  // On Windows/Linux this can be the only window before the dashboard exists.
+  // Closing it means Later/Cancel, not a request to quit the whole application.
+  startupProxyPromptOpen = true;
+  try { return await windows.promptNetworkProxy(options); }
+  finally { startupProxyPromptOpen = false; }
+}
 
 let crashScan = null;
 // Separate from `crashScan` so a scan that failed is not retried on every call:
@@ -288,6 +359,31 @@ const requestQuit = () => {
   isQuitting = true;
   app.quit();
 };
+
+let proxyRestartInProgress = false;
+async function restartForNetworkProxy() {
+  if (proxyRestartInProgress) return;
+  proxyRestartInProgress = true;
+  // Suppress liveness recovery during the existing owned-child shutdown path.
+  // stopGracefully is a no-op for an adopted/external/remote Gateway.
+  isQuitting = true;
+  try {
+    await gateway.stopGracefully();
+    app.relaunch();
+    requestQuit();
+  } catch (error) {
+    isQuitting = false;
+    proxyRestartInProgress = false;
+    await dialog.showMessageBox({
+      type: "error",
+      title: "Restart Kiro Crew",
+      message: "The app could not restart automatically.",
+      detail: "Your proxy settings are saved. Quit and reopen Kiro Crew to apply them.",
+      buttons: ["OK"],
+    });
+    gwarn("Proxy restart failed: " + error.message);
+  }
+}
 
 // Only the lock winner may arm native logging. A rejected second instance must
 // not rotate chromium.log out from under the primary process.
@@ -402,6 +498,10 @@ const gateway = createGatewaySupervisor({
   // process pins the answer into the successor's environment, so the port it
   // watches is the port the successor takes.
   predictLocalPort: () => fallbackLocalPort(store, glog),
+  getGatewayEnvironment: (baseEnv) => {
+    if (!startupProxyPolicy) throw new Error("Repair Network Proxy settings before starting a Gateway.");
+    return applyProxyEnvironment(baseEnv, startupProxyPolicy.environment);
+  },
 });
 
 windows = createWindowLifecycle({
@@ -417,6 +517,10 @@ windows = createWindowLifecycle({
   requestQuit,
   connectWindow: (...args) => gateway.connect(...args),
   syncTunnel: () => gateway.syncTunnel(),
+  restartForNetworkProxy,
+  getProxyStatus: () => startupProxyPolicy
+    ? `Active for this launch: ${startupProxyPolicy.description}. ${startupProxyPolicy.warning || ""}`
+    : "The saved proxy settings must be repaired before the app can start.",
 });
 
 const ipcRegistrar = createIpcRegistrar({
@@ -545,6 +649,52 @@ app.whenReady().then(async () => {
   // here on an exception is recovered, not fatal.
   releaseEarlyBootGuard();
 
+  if (startupProxyError) {
+    const { response } = await dialog.showMessageBox({
+      type: "error",
+      title: "Invalid Network Proxy Settings",
+      message: "Repair the saved proxy settings before starting Kiro Crew.",
+      detail: startupProxyError,
+      buttons: ["Open Proxy Settings", "Quit"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      await promptStartupNetworkProxy({
+        notice: "The saved proxy settings are invalid. Save a valid mode and restart to continue.",
+        restartRequired: true,
+      });
+    }
+    if (!isQuitting) requestQuit();
+    return;
+  }
+
+  try {
+    await Promise.all([
+      configureSessionProxy(session.defaultSession),
+      configureSessionProxy(session.fromPartition(BROWSER_PARTITION)),
+    ]);
+  } catch (error) {
+    await reportProxySessionFailure(error);
+    return;
+  }
+  glog("Network proxy: " + startupProxyPolicy.description);
+  if (startupProxyPolicy.warning) {
+    gwarn("Network proxy: " + startupProxyPolicy.warning);
+    const { response } = await dialog.showMessageBox({
+      type: "warning",
+      title: "Network Proxy",
+      message: startupProxyPolicy.warning,
+      detail: "Check Connection > Network Proxy to choose a supported HTTP proxy. "
+        + "Existing Gateways and remote hosts keep their own settings.",
+      buttons: ["Open Proxy Settings", "Continue"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) await promptStartupNetworkProxy();
+    if (isQuitting) return;
+  }
+
   // A managed SSH forward does not survive sleep; reopen it on wake. A no-op
   // unless this launch is keeping one.
   try {
@@ -664,5 +814,5 @@ app.on("will-quit", () => {
 
 app.on("window-all-closed", () => {
   // macOS keeps the menu-bar/tray process alive without windows.
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin" && !startupProxyPromptOpen) app.quit();
 });

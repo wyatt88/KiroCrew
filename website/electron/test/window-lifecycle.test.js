@@ -157,6 +157,7 @@ describe("window lifecycle module boundary", () => {
       "chrome.js",
       "linux-captions.js",
       "prompts.js",
+      "proxy-prompt.js",
       "session-security.js",
     ]);
     for (const owner of owners) {
@@ -270,6 +271,44 @@ function securityHarness() {
 }
 
 describe("session security registration", () => {
+  it("closing the startup proxy form can continue boot on Windows/Linux", () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8")
+      .replace(/\r\n/g, "\n");
+    const handler = mainSource.match(
+      /app\.on\("window-all-closed", \(\) => \{([\s\S]*?)\n\}\);/,
+    );
+    assert.ok(handler, "the real application's close handler must be checked");
+    const onAllClosed = new Function("process", "app", "startupProxyPromptOpen", handler[1]);
+    for (const platform of ["win32", "linux", "darwin"]) {
+      let quits = 0;
+      const app = { quit: () => { quits += 1; } };
+      onAllClosed({ platform }, app, true);
+      assert.equal(quits, 0, `${platform}: closing a pre-dashboard form permits Continue`);
+      onAllClosed({ platform }, app, false);
+      assert.equal(quits, platform === "darwin" ? 0 : 1, `${platform}: ordinary close behavior is preserved`);
+    }
+    assert.match(mainSource, /finally \{ startupProxyPromptOpen = false; \}/);
+    const ready = mainSource.slice(mainSource.indexOf("app.whenReady().then"));
+    assert.equal((ready.match(/await promptStartupNetworkProxy\(/g) || []).length, 2);
+    assert.match(ready, /if \(!isQuitting\) requestQuit\(\);\s*return;/,
+      "invalid configuration still explicitly quits after cancelling repair");
+  });
+
+  it("awaits both real Chromium sessions before any startup network surface", () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8")
+      .replace(/\r\n/g, "\n");
+    const ready = mainSource.slice(mainSource.indexOf("app.whenReady().then"));
+    const barrier = ready.match(
+      /await Promise\.all\(\[\s*configureSessionProxy\(session\.defaultSession\),\s*configureSessionProxy\(session\.fromPartition\(BROWSER_PARTITION\)\),?\s*\]\)/,
+    );
+    assert.ok(barrier, "both existing sessions must finish setProxy before boot proceeds");
+    for (const startup of ["windows.createMainWindow()", "ipcRegistrar.registerUpdater()", "gateway.start()"]) {
+      assert.ok(ready.indexOf(startup) > barrier.index, `${startup} stays after the proxy barrier`);
+    }
+    assert.match(PANELS_SOURCE, /partition:\s*BROWSER_PARTITION/);
+    assert.match(SOURCE, /partition:\s*BROWSER_PARTITION/);
+  });
+
   it("registers every default and browser-partition policy exactly once", async () => {
     const { calls, lifecycle, dashboardMain, paneFrame } = securityHarness();
 

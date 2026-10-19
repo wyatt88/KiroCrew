@@ -57,6 +57,7 @@ const {
   createWindowChrome,
 } = require("./runtime/window/chrome");
 const { createWindowPrompts } = require("./runtime/window/prompts");
+const { createProxyPrompt } = require("./runtime/window/proxy-prompt");
 const { createSessionSecurity } = require("./runtime/window/session-security");
 const { injectLinuxCaptionControls } = require("./runtime/window/linux-captions");
 const { attachBrowserPanels, dispatchBrowserOp } = require("./runtime/window/browser-panels");
@@ -106,6 +107,8 @@ function createWindowLifecycle(options) {
     // Re-apply the launch port's managed-tunnel choice after a save here, so
     // ticking or un-ticking it takes effect without a relaunch.
     syncTunnel = () => {},
+    restartForNetworkProxy = async () => {},
+    getProxyStatus = () => "",
     platform = process.platform,
     env = process.env,
   } = options || {};
@@ -220,6 +223,15 @@ function createWindowLifecycle(options) {
     shell,
     isMac: IS_MAC,
     partition: BROWSER_PARTITION,
+  });
+  const { promptNetworkProxy } = createProxyPrompt({
+    BrowserWindow,
+    nativeTheme,
+    store,
+    getParent: () => focusedDashboardWindow() || mainWindow,
+    dialog,
+    restartApp: restartForNetworkProxy,
+    getProxyStatus,
   });
 
   // BaseWindow.fromWebContents does not exist. Match the dashboard view
@@ -1333,6 +1345,7 @@ function createWindowLifecycle(options) {
       openNewConnectionWindow: () => openNewConnectionWindow(),
       renameCurrentWindow: () => renameCurrentWindow(),
       promptRemoteHost: () => promptRemoteHost(),
+      promptNetworkProxy: () => promptNetworkProxy(),
       refreshToken: () => refreshToken(),
       openConfigFile: () => openPathHardened(shell, store.path),
     }));
@@ -1611,6 +1624,7 @@ function createWindowLifecycle(options) {
     openNewSessionWindow,
     openNewConnectionWindow,
     promptRemoteHost,
+    promptNetworkProxy,
     refreshToken,
     renameCurrentWindow,
     setupWindowContents,

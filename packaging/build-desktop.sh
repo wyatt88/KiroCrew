@@ -336,9 +336,10 @@ rm_rf_resilient() {
 
 # Invoke electron-builder. Split into its own function purely so a test can
 # shadow it with a stub -- CSC_IDENTITY_AUTO_DISCOVERY=false disables macOS
-# codesign identity auto-discovery for local/CI builds.
+# codesign identity auto-discovery for local/CI builds. Publishing belongs to
+# the release workflows, never this local artifact-building step.
 _eb_invoke() {
-  CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "$@"
+  CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder --publish never "$@"
 }
 
 # Run electron-builder (EB_ARGS as "$@"), retrying a bounded number of times
@@ -935,7 +936,9 @@ fi
 # only, under the reader's 8 KiB read cap -- and the build FAILS on anything
 # else: the reader treats a malformed marker as "managed, nothing to run", so a
 # typo here would silently ship an app that can neither self-update nor be
-# updated from its About panel. Unset, nothing is staged: the unconditional
+# updated from its About panel. A named manager with neither command explicitly
+# selects manual updates; a check command still requires an update command.
+# Unset, nothing is staged: the unconditional
 # cleanup above (ahead of the SKIP_ELECTRON exit) already removed any leftover
 # from a previous local build, so a stale declaration cannot ride along.
 if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
@@ -962,7 +965,11 @@ if [ -n "${KIROCREW_MANAGED_INSTALL_MARKER:-}" ]; then
       if (parsed[k].trim() !== parsed[k]) { console.error(`marker field "${k}" has leading/trailing whitespace the reader would trim`); process.exit(1); }
       if (parsed[k].length > caps[k]) { console.error(`marker field "${k}" is ${parsed[k].length} chars; the reader caps at ${caps[k]} and would truncate the command`); process.exit(1); }
     }
-    if (!parsed.updateCommand) { console.error("marker has no updateCommand: it would disable updates without offering any"); process.exit(1); }
+    if (!parsed.updateCommand && !parsed.checkCommand) {
+      if (!parsed.managedBy) { console.error("manual update marker requires a non-empty managedBy"); process.exit(1); }
+    } else if (!parsed.updateCommand) {
+      console.error("marker checkCommand requires updateCommand"); process.exit(1);
+    }
   ' "$MARKER_SRC" || { echo "❌ KIROCREW_MANAGED_INSTALL_MARKER rejected: $MARKER_SRC" >&2; exit 1; }
   # Staged for THIS build only: electron-builder packs it below, and the copy
   # must not outlive the run -- a later build of a different edition from the

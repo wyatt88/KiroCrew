@@ -968,6 +968,51 @@ The function is pure — `fs`, `os`, `path`, `process.resourcesPath`,
 `__dirname`, and the arch are injected — so both arch branches are
 unit-testable without mocking globals.
 
+### Outbound proxy and ClashX
+
+**Connection > Network Proxy…** stores the desktop-only `networkProxy` setting:
+`mode` is `system` (the default), `clashx`, or `direct`; `url` defaults to
+`http://127.0.0.1:7890`. The HTTP or mixed port must match the separately running
+ClashX instance. HTTP/HTTPS endpoints are accepted; credentials, paths, query
+strings, fragments and malformed ports are rejected without losing the form
+draft. The form is an isolated, sandboxed data document with no preload. Its
+title submission is accepted only from that exact document, page navigation and
+new windows are blocked, and all variable text is escaped.
+
+`main.js` resolves `outbound-proxy.js`'s policy once per launch, without changing
+`process.env`. System mode keeps explicit shell proxy variables first. If none
+are inherited on macOS, the shell reads `/usr/sbin/scutil --proxy` with a
+two-second timeout and converts supported fixed HTTP/HTTPS settings. Unsupported
+PAC/WPAD or SOCKS-only settings and failed reads produce a visible warning;
+they do not imply that Gateway proxy routing works. Chromium receives the policy
+through `session.setProxy`. The default session and the native browser's
+`persist:kirocrew-browser` session are pre-created and awaited before the first
+dashboard, browser panel, or update check. A `session-created` listener also
+applies the policy to any future session, but is not itself a request barrier:
+a future feature adding another partition must await its policy before loading.
+
+At the Gateway's actual spawn boundary, the supervisor applies the frozen proxy
+environment through `getGatewayEnvironment`, while preserving its computed
+`PATH`, project directory and UTF-8 overrides. Direct mode removes inherited
+HTTP/HTTPS/ALL proxy endpoints only from that child environment and sets
+`NO_PROXY` / `no_proxy` to `*`, suppressing macOS Python's otherwise automatic
+system-proxy fallback. Fixed proxy modes retain a
+localhost/loopback bypass. Main-process SSH helpers are not rewritten, and
+already running CLI/service Gateways and remote hosts keep their own settings.
+The Gateway and Agent environment helps only HTTP clients that honor
+`HTTP(S)_PROXY`. It does not intercept every backend request or change
+`aiohttp.ClientSession`'s existing `trust_env` policies; clients that ignore the
+proxy environment retain their previous routing.
+
+Saving offers **Restart App** or **Later** and takes effect on the next app
+launch and newly spawned Gateways. Restart awaits the existing owned-child
+graceful shutdown before relaunching; it does not stop an external Gateway.
+An invalid saved policy blocks dashboard/Gateway startup and offers **Open
+Proxy Settings** or **Quit**. The repair form requires **Save and Restart**,
+so a bad explicit proxy can never silently become a direct/system connection.
+No part of this feature changes the host's network settings or starts ClashX,
+and a configured endpoint is not a reachability check.
+
 ### `gateway-supervisor.js` — owning the gateway lifecycle
 
 The supervisor keeps every piece of gateway state in its own closure — the

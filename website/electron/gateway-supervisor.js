@@ -165,6 +165,7 @@ function createGatewaySupervisor({
   error,
   logPath,
   predictLocalPort = () => port,
+  getGatewayEnvironment = (baseEnv) => baseEnv,
   fsMod = defaultFs,
   osMod = defaultOs,
   pathMod = defaultPath,
@@ -1330,7 +1331,7 @@ function createGatewaySupervisor({
       stdio: ["ignore", childOut, childOut],
       detached: false,
       windowsHide: true,
-      env: buildGatewayEnvironment({
+      env: buildGatewayEnvironment(getGatewayEnvironment({
         ...cleanEnv,
         ...(gatewayPath ? { PATH: gatewayPath.path } : {}),
         KIROCREW_PROJECT_DIR: IS_WIN
@@ -1351,7 +1352,7 @@ function createGatewaySupervisor({
           path.join(kirocrewDir, "cache", "pycache"),
           app.isPackaged,
         ),
-      }),
+      })),
     });
     gatewayProcess = child;
     gatewayOwnership = "spawned";

@@ -172,6 +172,7 @@ function harness(overrides = {}) {
     },
     logPath: () => "/virtual/logs/gateway-launch.log",
     predictLocalPort: overrides.predictLocalPort,
+    getGatewayEnvironment: overrides.getGatewayEnvironment,
     fsMod,
     osMod: { homedir: () => "/virtual/home" },
     pathMod: path.posix,
@@ -658,6 +659,85 @@ test("spawn errors use the user-facing error channel", async () => {
   spawnCalls[0].child.emit("error", error);
 
   assert.ok(errors.some((line) => line.includes("spawn ERROR code=ENOENT")));
+});
+
+test("Gateway spawn receives the frozen proxy policy while preserving launch and UTF-8 fields", async () => {
+  const { resolveProxyPolicy, applyProxyEnvironment } = require("../outbound-proxy");
+  const originalEnv = Object.freeze({
+    KIROCREW_HOME: "/virtual/kirocrew-home",
+    KIROCREW_PORT: "8888",
+    PATH: "/virtual/bin",
+    ALL_PROXY: "socks5://127.0.0.1:7891",
+    PYTHONUTF8: "0",
+    PYTHONIOENCODING: "ascii",
+  });
+  const policy = resolveProxyPolicy({
+    settings: { mode: "clashx", url: "http://127.0.0.1:7897" },
+    env: originalEnv,
+    platform: "linux",
+  });
+  let calls = 0;
+  const { supervisor, spawnCalls } = harness({
+    processRef: { platform: "test", arch: "x64", env: originalEnv },
+    getGatewayEnvironment(baseEnv) {
+      calls += 1;
+      assert.equal(baseEnv.KIROCREW_PROJECT_DIR, "/virtual");
+      return applyProxyEnvironment(baseEnv, policy.environment);
+    },
+  });
+  assert.equal(await supervisor.start(), true);
+  assert.equal(calls, 1);
+  const env = spawnCalls[0][2].env;
+  assert.equal(env.HTTP_PROXY, "http://127.0.0.1:7897");
+  assert.equal(env.HTTPS_PROXY, "http://127.0.0.1:7897");
+  assert.equal(env.ALL_PROXY, "http://127.0.0.1:7897");
+  assert.match(env.NO_PROXY, /localhost/);
+  assert.match(env.NO_PROXY, /127\.0\.0\.1/);
+  assert.equal(env.PYTHONUTF8, "1");
+  assert.equal(env.PYTHONIOENCODING, "utf-8:backslashreplace");
+  assert.equal(env.PATH, "/virtual/bin");
+  assert.equal(env.KIROCREW_PROJECT_DIR, "/virtual");
+  assert.equal(env.KIROCREW_PORT, undefined);
+  assert.equal(originalEnv.ALL_PROXY, "socks5://127.0.0.1:7891");
+  assert.equal(originalEnv.PYTHONUTF8, "0");
+});
+
+test("a launch with the local Gateway disabled never applies child proxy settings", async () => {
+  const { supervisor, spawnCalls } = harness({
+    store: fakeStore({ runLocalGateway: false }),
+    getGatewayEnvironment() { throw new Error("no child environment may be built"); },
+  });
+  await supervisor.start();
+  assert.equal(spawnCalls.length, 0);
+});
+
+test("direct Gateway spawn suppresses inherited endpoints and macOS Python system-proxy fallback", async () => {
+  const { resolveProxyPolicy, applyProxyEnvironment } = require("../outbound-proxy");
+  const originalEnv = Object.freeze({
+    KIROCREW_HOME: "/virtual/kirocrew-home",
+    HTTP_PROXY: "http://127.0.0.1:7890",
+    http_proxy: "http://127.0.0.1:7890",
+    HTTPS_PROXY: "http://127.0.0.1:7890",
+    ALL_PROXY: "socks5://127.0.0.1:7891",
+    NO_PROXY: "localhost",
+  });
+  const policy = resolveProxyPolicy({
+    settings: { mode: "direct" }, env: originalEnv, platform: "darwin",
+  });
+  const { supervisor, spawnCalls } = harness({
+    processRef: { platform: "test", arch: "x64", env: originalEnv },
+    getGatewayEnvironment: (baseEnv) => applyProxyEnvironment(baseEnv, policy.environment),
+  });
+  assert.equal(await supervisor.start(), true);
+  const env = spawnCalls[0][2].env;
+  for (const key of ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) {
+    assert.equal(env[key], undefined, `${key} must not reach a direct Gateway`);
+  }
+  assert.equal(env.NO_PROXY, "*");
+  assert.equal(env.no_proxy, "*");
+  assert.equal(env.PYTHONUTF8, "1");
+  assert.equal(originalEnv.HTTP_PROXY, "http://127.0.0.1:7890");
+  assert.equal(originalEnv.NO_PROXY, "localhost");
 });
 
 test("unexpected child exits are visible but quit exits stay file-only", async () => {

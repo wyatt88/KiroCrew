@@ -33,6 +33,7 @@ function buildMenuTemplate(deps) {
     openNewConnectionWindow,
     renameCurrentWindow,
     promptRemoteHost,
+    promptNetworkProxy,
     refreshToken,
     openConfigFile,
   } = deps;
@@ -152,6 +153,9 @@ function buildMenuTemplate(deps) {
         { type: "separator" },
         { label: "Set Remote Host…", click: promptRemoteHost },
         { label: "Refresh Token", accelerator: "CmdOrCtrl+Shift+T", click: refreshToken },
+        ...(typeof promptNetworkProxy === "function"
+          ? [{ label: "Network Proxy…", click: promptNetworkProxy }]
+          : []),
         { label: "Open Config File", click: openConfigFile },
       ],
     },

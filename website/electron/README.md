@@ -48,6 +48,48 @@ fail-closed: a broken higher-priority Kiro CLI is shown as needing repair and is
 not skipped in favor of a later candidate. Remote tunnel sessions check the
 remote gateway host.
 
+## Outbound proxy (ClashX)
+
+Open **Connection > Network Proxy…** to choose **Use system / shell proxy**,
+**ClashX / custom HTTP proxy**, or **Direct connection**. The default is system
+mode. ClashX mode defaults to `http://127.0.0.1:7890`; change it to the HTTP or
+mixed port configured in your running ClashX instance. The app does not install,
+start, or change ClashX or macOS network settings.
+
+The proxy URL accepts HTTP/HTTPS endpoints without credentials, paths, query
+strings or fragments. Validation errors keep the form and its draft open.
+Saving writes `networkProxy` into the Electron settings and offers **Restart
+App** or **Later**. Restart applies the setting to Chromium sessions and the
+proxy environment inherited by local Gateway and Agent processes subsequently
+started by the app. Their HTTP clients must honor `HTTP(S)_PROXY`; clients that
+ignore these variables retain their existing routing. The app does not change
+the backend's `aiohttp` trust policies. Restart shuts down only the Gateway the
+app owns, using the existing graceful shutdown path. A Gateway reused from the
+CLI or a service, and a Gateway on a remote host, keep their own environment.
+The shell's SSH helpers keep the original environment too.
+
+System mode preserves an explicit shell proxy environment first. On macOS,
+when none is inherited, a bounded read of `scutil --proxy` can supply fixed
+HTTP/HTTPS endpoints in the Gateway's environment. PAC/WPAD, SOCKS-only system settings and
+unreadable settings produce a visible warning; they are not represented as
+working ClashX support. Direct mode removes inherited HTTP/HTTPS/ALL proxy
+endpoints from new Gateway children and sets `NO_PROXY` / `no_proxy` to `*`,
+preventing macOS Python from falling back to the system proxy. Chromium uses
+direct mode. Localhost traffic bypasses fixed proxies so the dashboard can
+still reach its local Gateway.
+
+Settings are resolved once per app launch. Invalid saved settings block the
+dashboard and Gateway startup and offer **Open Proxy Settings** or **Quit**;
+repair uses **Save and Restart**, with no silent fallback. This feature
+configures routing, and does not by itself prove the selected proxy is running
+or can reach a particular upstream service.
+
+The default Chromium session and the native browser's
+`persist:kirocrew-browser` session are configured before any dashboard, browser
+panel, or updater begins loading. Any future session also receives the policy,
+but a future feature introducing another partition must await its configuration
+before making its first network request.
+
 ## Main-process owners
 
 `main.js` is the composition root. Between them, `main.js` and `ipc-registrar.js`
@@ -57,7 +99,7 @@ and each facade composes cohesive owners under `runtime/<area>/`:
 | Facade (what `main.js` and `ipc-registrar.js` require) | Runtime owners it composes | What stays in the facade |
 |---|---|---|
 | `gateway-supervisor.js` (`createGatewaySupervisor`) | `runtime/gateway/launch-preflight.js` (backend binary, bundle completeness, project dir, sandbox-profile advice, launchd `PATH`, relaunch target) · `port-holders.js` (lsof/ps/netstat probes, trusted Windows gateway commands, incumbent snapshot and exit wait, force-stop) · `family-takeover.js` (quitting the other release family's app) · `token-sources.js` (the local-secret mint and the SSH token fetch) · `remote-crew-prompt.js` (the Add / Edit Remote Crew form) | All gateway state (child, ownership, start failure, liveness monitor, update handoff), the spawn site and its environment, every port occupancy and identity decision, the connect flow, the failure dialog, liveness recovery and shutdown |
-| `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
+| `window-lifecycle.js` (`createWindowLifecycle`) | `runtime/window/chrome.js` (traffic lights, title-bar overlay, native theme, zoom, focus-mode chrome) · `prompts.js` (New Connection Window port prompt, Rename Window) · `proxy-prompt.js` (Network Proxy settings and restart choice) · `session-security.js` (session permission policy, microphone and screen-recording recovery dialogs) · `linux-captions.js` (frameless Linux caption controls) · `browser-panels.js` (per-window native browser panels and their agent command channel) | Window creation and state restore, the drag band, fullscreen handling, close-to-tray and every show path, the tray, the remote-host prompt, the menu, window-control admission, and the browser IPC routing |
 | `auto-update.js` (`initAutoUpdate` and 16 policy exports) | `runtime/update/state-reporter.js` (channel, lane pair, lifecycle pushes, replayable info) · `feed-lane.js` (electron-updater discovery, download, staged install) · `managed-lane.js` (the marker-driven check and apply commands) | Channel and feed policy (`KNOWN_CHANNELS`, `channelHasLane`, `channelForVersion`, `buildFeedBase`, `manualDownloadUrl`), the update-policy flags, the `EXTERNALLY-MANAGED` marker reader and its caps, the narrowed marker-command `PATH`, the install-shape probes, and the gates that choose a lane |
 | `crash-collector.js` (`armCrashCollector`, `collectCrashReports`, `crashNoticeSummary`) | `runtime/crash/ownership.js` · `artifact-parsers.js` · `candidates.js` · `persistence.js` · `scan.js` | The export surface and `crashNoticeSummary`, the one renderer-facing view |
 

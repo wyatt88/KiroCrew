@@ -2,7 +2,9 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    # Custom proxy builds are packaged separately and must not write the
+    # official stable/insider update feeds.
+    tags: ["v*", "!v*-proxy", "!v*-proxy.*"]
 
 # Prerelease tags build, sign, publish, and record one immutable promotion
 # bundle. A bare stable tag REBUILDS that same commit under the bare version, so
